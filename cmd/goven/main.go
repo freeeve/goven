@@ -1,0 +1,143 @@
+// Command goven is a fast Maven repository client: it fetches and inspects
+// artifacts in Maven repositories using native settings.xml support, with no
+// JVM required.
+package main
+
+import (
+	"fmt"
+	"os"
+	"sort"
+	"strings"
+)
+
+// version is stamped at build time via -ldflags "-X main.version=...".
+var version = "dev"
+
+// globalOpts carries options shared by every subcommand, mirroring the Maven
+// flags users already know: settings files, active profiles, and -D properties.
+type globalOpts struct {
+	userSettings   string
+	globalSettings string
+	profiles       []string
+	props          map[string]string
+}
+
+// command is a registered subcommand; implementations add themselves to the
+// commands map from their file's init function.
+type command struct {
+	name    string
+	summary string
+	run     func(g *globalOpts, args []string) error
+}
+
+var commands = map[string]*command{}
+
+func register(c *command) { commands[c.name] = c }
+
+func main() {
+	g, rest, err := parseGlobal(os.Args[1:])
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "goven:", err)
+		os.Exit(2)
+	}
+	if len(rest) == 0 {
+		usage()
+		os.Exit(2)
+	}
+	name := rest[0]
+	switch name {
+	case "help", "-h", "--help":
+		usage()
+		return
+	case "version", "--version":
+		fmt.Println("goven", version)
+		return
+	}
+	c, ok := commands[name]
+	if !ok {
+		fmt.Fprintf(os.Stderr, "goven: unknown command %q\n\n", name)
+		usage()
+		os.Exit(2)
+	}
+	if err := c.run(g, rest[1:]); err != nil {
+		fmt.Fprintln(os.Stderr, "goven:", err)
+		os.Exit(1)
+	}
+}
+
+// parseGlobal extracts the Maven-style global flags that may precede the
+// subcommand, accepting both "-Dkey=val" and "-P profile" spellings. It stops
+// at the first token that is not a recognized global flag and returns the
+// remainder untouched for the subcommand's own flag parsing.
+func parseGlobal(args []string) (*globalOpts, []string, error) {
+	g := &globalOpts{props: map[string]string{}}
+	i := 0
+	for i < len(args) {
+		a := args[i]
+		switch {
+		case strings.HasPrefix(a, "-D") && len(a) > 2:
+			k, v, _ := strings.Cut(a[2:], "=")
+			g.props[k] = v
+		case a == "-P" || a == "--activate-profiles":
+			if i+1 >= len(args) {
+				return nil, nil, fmt.Errorf("%s requires an argument", a)
+			}
+			i++
+			g.profiles = append(g.profiles, splitList(args[i])...)
+		case strings.HasPrefix(a, "-P") && len(a) > 2:
+			g.profiles = append(g.profiles, splitList(a[2:])...)
+		case a == "-s" || a == "--settings":
+			if i+1 >= len(args) {
+				return nil, nil, fmt.Errorf("%s requires an argument", a)
+			}
+			i++
+			g.userSettings = args[i]
+		case a == "-gs" || a == "--global-settings":
+			if i+1 >= len(args) {
+				return nil, nil, fmt.Errorf("%s requires an argument", a)
+			}
+			i++
+			g.globalSettings = args[i]
+		default:
+			return g, args[i:], nil
+		}
+		i++
+	}
+	return g, nil, nil
+}
+
+// splitList splits a comma-separated flag value, dropping empty entries.
+func splitList(s string) []string {
+	var out []string
+	for p := range strings.SplitSeq(s, ",") {
+		if p = strings.TrimSpace(p); p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+func usage() {
+	fmt.Fprintf(os.Stderr, `goven %s - fast Maven repository client (no JVM)
+
+Usage:
+  goven [global flags] <command> [command flags] [args]
+
+Global flags (before the command; -D may appear anywhere):
+  -s <file>       user settings.xml (default ~/.m2/settings.xml)
+  -gs <file>      global settings.xml (default $M2_HOME/conf/settings.xml)
+  -P <profiles>   comma-separated profiles to activate ("!" deactivates)
+  -Dkey=value     set a property (repeatable)
+
+Commands:
+`, version)
+	names := make([]string, 0, len(commands))
+	for n := range commands {
+		names = append(names, n)
+	}
+	sort.Strings(names)
+	for _, n := range names {
+		fmt.Fprintf(os.Stderr, "  %-10s %s\n", n, commands[n].summary)
+	}
+	fmt.Fprintf(os.Stderr, "  %-10s %s\n  %-10s %s\n", "version", "print the goven version", "help", "show this help")
+}
