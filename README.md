@@ -16,6 +16,16 @@ with checksums. For Python, JavaScript, and other non-Java projects that
 publish to or consume from a Maven repository, that also means installing a
 JDK and Maven into images that otherwise have no use for them.
 
+Measured on the same machine and network (artifact purged, Maven's plugin
+cache already warm), fetching `commons-lang3:3.14.0` from Maven Central:
+
+|              | wall time | peak memory |
+|--------------|-----------|-------------|
+| `mvn dependency:get` | 5.5 s | 336 MB |
+| `goven get`  | 1.3 s     | 14 MB       |
+
+Same bytes, checksum-verified either way.
+
 goven does the same repository operations natively:
 
 - **Fast**: milliseconds instead of seconds; a few MB of memory instead of
