@@ -8,6 +8,8 @@ import (
 	"os"
 	"sort"
 	"strings"
+
+	"github.com/freeeve/goven/internal/repo"
 )
 
 // version is stamped at build time via -ldflags "-X main.version=...".
@@ -35,6 +37,7 @@ var commands = map[string]*command{}
 func register(c *command) { commands[c.name] = c }
 
 func main() {
+	repo.Version = version
 	g, rest, err := parseGlobal(os.Args[1:])
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "goven:", err)
@@ -104,6 +107,28 @@ func parseGlobal(args []string) (*globalOpts, []string, error) {
 		i++
 	}
 	return g, nil, nil
+}
+
+// reorderArgs moves flags ahead of positional arguments so commands accept
+// "goven get g:a:v -o dir" as well as "goven get -o dir g:a:v", which stdlib
+// flag parsing alone does not. valueFlags names flags that consume the next
+// argument when not written as -flag=value.
+func reorderArgs(args []string, valueFlags map[string]bool) []string {
+	var flags, positional []string
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		if !strings.HasPrefix(a, "-") {
+			positional = append(positional, a)
+			continue
+		}
+		flags = append(flags, a)
+		name := strings.TrimLeft(a, "-")
+		if !strings.Contains(name, "=") && valueFlags[name] && i+1 < len(args) {
+			i++
+			flags = append(flags, args[i])
+		}
+	}
+	return append(flags, positional...)
 }
 
 // splitList splits a comma-separated flag value, dropping empty entries.
