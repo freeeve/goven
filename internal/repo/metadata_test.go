@@ -49,7 +49,7 @@ func TestParseArtifactMetadata(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ParseMetadata: %v", err)
 	}
-	if m.Versioning.Release != "2.0.0" || len(m.Versioning.Versions) != 3 {
+	if m.Versioning.Release != "2.0.0" || len(m.Versioning.Versions.Version) != 3 {
 		t.Errorf("versioning = %+v", m.Versioning)
 	}
 }

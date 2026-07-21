@@ -5,16 +5,20 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"sync"
 	"sync/atomic"
 	"testing"
 )
 
-// fixtureServer is an in-memory maven2-layout repository for tests.
+// fixtureServer is an in-memory maven2-layout repository for tests, serving
+// GETs and accepting PUTs like a hosted Nexus repository.
 type fixtureServer struct {
+	mu    sync.RWMutex
 	files map[string][]byte
 	user  string
 	pass  string
@@ -22,11 +26,21 @@ type fixtureServer struct {
 
 // put stores a file plus its sha1 and sha256 checksum sidecars.
 func (f *fixtureServer) put(path string, data []byte) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.files[path] = data
 	s1 := sha1.Sum(data)
 	s256 := sha256.Sum256(data)
 	f.files[path+".sha1"] = []byte(hex.EncodeToString(s1[:]))
 	f.files[path+".sha256"] = []byte(hex.EncodeToString(s256[:]))
+}
+
+// get reads a stored file under the read lock.
+func (f *fixtureServer) get(path string) ([]byte, bool) {
+	f.mu.RLock()
+	defer f.mu.RUnlock()
+	data, ok := f.files[path]
+	return data, ok
 }
 
 func (f *fixtureServer) handler() http.Handler {
@@ -38,7 +52,20 @@ func (f *fixtureServer) handler() http.Handler {
 				return
 			}
 		}
-		data, ok := f.files[r.URL.Path[1:]]
+		path := r.URL.Path[1:]
+		if r.Method == http.MethodPut {
+			body, err := io.ReadAll(r.Body)
+			if err != nil {
+				w.WriteHeader(http.StatusInternalServerError)
+				return
+			}
+			f.mu.Lock()
+			f.files[path] = body
+			f.mu.Unlock()
+			w.WriteHeader(http.StatusCreated)
+			return
+		}
+		data, ok := f.get(path)
 		if !ok {
 			w.WriteHeader(http.StatusNotFound)
 			return

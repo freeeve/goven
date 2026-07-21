@@ -11,21 +11,35 @@ import (
 // list, latest/release) and version level (SNAPSHOT timestamp/buildNumber and
 // per-file snapshotVersions).
 type Metadata struct {
-	XMLName    xml.Name   `xml:"metadata"`
-	GroupID    string     `xml:"groupId"`
-	ArtifactID string     `xml:"artifactId"`
-	Version    string     `xml:"version,omitempty"`
-	Versioning Versioning `xml:"versioning"`
+	XMLName      xml.Name   `xml:"metadata"`
+	ModelVersion string     `xml:"modelVersion,attr,omitempty"`
+	GroupID      string     `xml:"groupId"`
+	ArtifactID   string     `xml:"artifactId"`
+	Version      string     `xml:"version,omitempty"`
+	Versioning   Versioning `xml:"versioning"`
 }
 
-// Versioning is the <versioning> block of maven-metadata.xml.
+// Versioning is the <versioning> block of maven-metadata.xml. Field order
+// matters for serialization: it yields Maven's element order at both metadata
+// levels. The list wrappers are pointers because Go's a>b path tags would
+// otherwise emit empty wrapper elements Maven never writes.
 type Versioning struct {
-	Latest           string            `xml:"latest,omitempty"`
-	Release          string            `xml:"release,omitempty"`
-	Versions         []string          `xml:"versions>version,omitempty"`
-	Snapshot         *Snapshot         `xml:"snapshot,omitempty"`
-	SnapshotVersions []SnapshotVersion `xml:"snapshotVersions>snapshotVersion,omitempty"`
-	LastUpdated      string            `xml:"lastUpdated,omitempty"`
+	Latest           string               `xml:"latest,omitempty"`
+	Release          string               `xml:"release,omitempty"`
+	Versions         *VersionList         `xml:"versions,omitempty"`
+	Snapshot         *Snapshot            `xml:"snapshot,omitempty"`
+	LastUpdated      string               `xml:"lastUpdated,omitempty"`
+	SnapshotVersions *SnapshotVersionList `xml:"snapshotVersions,omitempty"`
+}
+
+// VersionList wraps the artifact-level <versions> element.
+type VersionList struct {
+	Version []string `xml:"version"`
+}
+
+// SnapshotVersionList wraps the version-level <snapshotVersions> element.
+type SnapshotVersionList struct {
+	SnapshotVersion []SnapshotVersion `xml:"snapshotVersion"`
 }
 
 // Snapshot carries the current timestamped build of a SNAPSHOT version.
@@ -44,6 +58,16 @@ type SnapshotVersion struct {
 	Updated    string `xml:"updated,omitempty"`
 }
 
+// MarshalMetadata serializes metadata as Maven writes it: XML declaration,
+// two-space indent, trailing newline.
+func MarshalMetadata(m *Metadata) ([]byte, error) {
+	body, err := xml.MarshalIndent(m, "", "  ")
+	if err != nil {
+		return nil, err
+	}
+	return append(append([]byte(xml.Header), body...), '\n'), nil
+}
+
 // ParseMetadata decodes one maven-metadata.xml document.
 func ParseMetadata(r io.Reader) (*Metadata, error) {
 	var m Metadata
@@ -60,9 +84,11 @@ func ParseMetadata(r io.Reader) (*Metadata, error) {
 // the <snapshot> timestamp/buildNumber, then the literal -SNAPSHOT name (the
 // non-unique-snapshot / localCopy case).
 func (m *Metadata) ResolveSnapshotVersion(c Coords) string {
-	for _, sv := range m.Versioning.SnapshotVersions {
-		if sv.Classifier == c.Classifier && sv.Extension == c.Type && sv.Value != "" {
-			return sv.Value
+	if l := m.Versioning.SnapshotVersions; l != nil {
+		for _, sv := range l.SnapshotVersion {
+			if sv.Classifier == c.Classifier && sv.Extension == c.Type && sv.Value != "" {
+				return sv.Value
+			}
 		}
 	}
 	s := m.Versioning.Snapshot

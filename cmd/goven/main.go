@@ -68,34 +68,44 @@ func main() {
 	}
 }
 
-// parseGlobal extracts the Maven-style global flags that may precede the
-// subcommand, accepting both "-Dkey=val" and "-P profile" spellings. It stops
-// at the first token that is not a recognized global flag and returns the
-// remainder untouched for the subcommand's own flag parsing.
+// parseGlobal extracts the Maven-style global flags, accepting both
+// "-Dkey=val" and "-P profile" spellings. Attached forms (-Dkey=val,
+// -Pprofiles) are collected from anywhere in the argument list, as Maven
+// users habitually place them after the goal; flags that consume a separate
+// value (-s, -gs, -P) must precede the subcommand, where parsing stops at the
+// first unrecognized token.
 func parseGlobal(args []string) (*globalOpts, []string, error) {
 	g := &globalOpts{props: map[string]string{}}
-	i := 0
-	for i < len(args) {
-		a := args[i]
+	var kept []string
+	for _, a := range args {
 		switch {
 		case strings.HasPrefix(a, "-D") && len(a) > 2:
 			k, v, _ := strings.Cut(a[2:], "=")
 			g.props[k] = v
-		case a == "-P" || a == "--activate-profiles":
+		case strings.HasPrefix(a, "-P") && len(a) > 2:
+			g.profiles = append(g.profiles, splitList(a[2:])...)
+		default:
+			kept = append(kept, a)
+		}
+	}
+	args = kept
+	i := 0
+	for i < len(args) {
+		a := args[i]
+		switch a {
+		case "-P", "--activate-profiles":
 			if i+1 >= len(args) {
 				return nil, nil, fmt.Errorf("%s requires an argument", a)
 			}
 			i++
 			g.profiles = append(g.profiles, splitList(args[i])...)
-		case strings.HasPrefix(a, "-P") && len(a) > 2:
-			g.profiles = append(g.profiles, splitList(a[2:])...)
-		case a == "-s" || a == "--settings":
+		case "-s", "--settings":
 			if i+1 >= len(args) {
 				return nil, nil, fmt.Errorf("%s requires an argument", a)
 			}
 			i++
 			g.userSettings = args[i]
-		case a == "-gs" || a == "--global-settings":
+		case "-gs", "--global-settings":
 			if i+1 >= len(args) {
 				return nil, nil, fmt.Errorf("%s requires an argument", a)
 			}

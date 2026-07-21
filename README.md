@@ -56,6 +56,17 @@ goven get org.apache.commons:commons-lang3:3.14.0
 goven get com.example:my-lib:2.1.0-SNAPSHOT:jar:sources -o build/deps/
 ```
 
+Deploy an artifact — a drop-in replacement for `mvn deploy:deploy-file`,
+including SNAPSHOT timestamped versions, buildNumber increments, checksum
+sidecars (md5/sha1/sha256/sha512), and `maven-metadata.xml` maintenance:
+
+```sh
+goven deploy build/lib.jar --gav com.example:lib:2.1.0 --repo nexus::https://nexus.corp/repository/releases
+# or keep your existing mvn CLI line and just swap the command name:
+goven deploy -Dfile=build/lib.jar -DgroupId=com.example -DartifactId=lib \
+  -Dversion=2.1.0-SNAPSHOT -DrepositoryId=nexus -Durl=https://nexus.corp/repository/snapshots
+```
+
 Check your repository configuration — which settings files were loaded, which
 profiles are active, which repositories (and mirrors) are in effect, and
 whether they are reachable with your credentials:
@@ -77,9 +88,10 @@ Global flags, Maven-compatible where it counts:
 
 ## Status
 
-Early and honest about it: `get` and `doctor` are implemented and tested.
-`deploy` (a drop-in for `mvn deploy:deploy-file`, including SNAPSHOT metadata
-handling) is next on the roadmap.
+`get`, `deploy`, and `doctor` are implemented and tested. Deploy metadata is
+verified field-for-field against real `mvn deploy:deploy-file` output, and
+repositories deployed by goven are consumed by stock Maven (round-trip tested
+for both releases and timestamped SNAPSHOTs).
 
 Not a Maven replacement — goven speaks the Maven *repository* protocol; it
 does not run builds or plugins.
@@ -92,6 +104,10 @@ does not run builds or plugins.
 - Encrypted passwords (`settings-security.xml`) are not yet supported; use
   plaintext or environment-variable interpolation (`${env.NAME}`) in
   `settings.xml`.
+- One deliberate safety divergence: when deploying with a classifier, goven
+  does not generate a POM by default (deploy-file's generated POM would land
+  on the classifier-less path and overwrite the main artifact's POM). Pass
+  `-DgeneratePom=true` to restore Maven's behavior.
 
 ## License
 
