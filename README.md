@@ -52,7 +52,8 @@ buildNumber sequencing.
 goven does the same repository operations natively:
 
 - **Fast**: milliseconds instead of seconds; a few MB of memory instead of
-  ~150 MB.
+  ~150 MB. Uploads overlap checksum computation with the transfer, so large
+  artifacts pay for hashing only when it outlasts the upload itself.
 - **Zero config migration**: reads your `settings.xml` natively — server
   credentials, mirror rules (`mirrorOf`, including `*`, `external:*`, and
   `!` exclusions), proxies, profiles and profile activation (`-P`,
