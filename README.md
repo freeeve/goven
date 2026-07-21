@@ -26,6 +26,20 @@ cache already warm), fetching `commons-lang3:3.14.0` from Maven Central:
 
 Same bytes, checksum-verified either way.
 
+Deploying a SNAPSHOT to a repository with a simulated 25 ms round-trip time
+(same file, same server; goven uploads concurrently where the protocol
+allows):
+
+|                        | wall time |
+|------------------------|-----------|
+| `mvn deploy:deploy-file` | ~1.5 s  |
+| `mvnd` (warm daemon)   | ~0.7 s    |
+| `goven deploy`         | ~0.22 s   |
+
+The three tools' outputs were cross-verified: byte-identical artifacts,
+every checksum sidecar validated by recomputation, and identical SNAPSHOT
+buildNumber sequencing.
+
 goven does the same repository operations natively:
 
 - **Fast**: milliseconds instead of seconds; a few MB of memory instead of
