@@ -332,6 +332,40 @@ func (cl *Client) ResolveVersion(repo RemoteRepo, c Coords) (string, error) {
 	return m.ResolveSnapshotVersion(c), nil
 }
 
+// FetchArtifactMetadata retrieves and parses the artifact-level
+// maven-metadata.xml (version list, latest/release) from one repository.
+func (cl *Client) FetchArtifactMetadata(repo RemoteRepo, groupID, artifactID string) (*Metadata, error) {
+	c := Coords{GroupID: groupID, ArtifactID: artifactID}
+	raw, err := cl.GetBytes(repo, c.ArtifactMetadataPath())
+	if err != nil {
+		return nil, err
+	}
+	m, err := ParseMetadata(bytes.NewReader(raw))
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", c.ArtifactMetadataPath(), err)
+	}
+	return m, nil
+}
+
+// Exists reports whether the artifact is present in the repository, with
+// SNAPSHOT versions resolved through metadata first. The resolved version is
+// returned when the artifact exists.
+func (cl *Client) Exists(repo RemoteRepo, c Coords) (bool, string, error) {
+	resolved, err := cl.ResolveVersion(repo, c)
+	if err != nil {
+		return false, "", err
+	}
+	resp, err := cl.do(repo, http.MethodHead, c.ArtifactPath(resolved), nil)
+	if errors.Is(err, ErrNotFound) {
+		return false, "", nil
+	}
+	if err != nil {
+		return false, "", err
+	}
+	drainAndClose(resp.Body)
+	return true, resolved, nil
+}
+
 // FetchArtifact downloads the artifact from the first repository in repos
 // that has it, honoring each repository's release/snapshot policy. It returns
 // the repository used and the resolved version.

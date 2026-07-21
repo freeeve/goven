@@ -330,6 +330,42 @@ func TestGetBytesIntoUnknownLength(t *testing.T) {
 	}
 }
 
+func TestExists(t *testing.T) {
+	f, repo := newFixture(t, "", "")
+	f.put("g/a/1.0/a-1.0.jar", []byte("x"))
+	f.put("com/example/lib/2.1.0-SNAPSHOT/maven-metadata.xml", []byte(versionMetadata))
+	f.put("com/example/lib/2.1.0-SNAPSHOT/lib-2.1.0-20260720.093012-3.jar", []byte("snap"))
+	cl := NewClient()
+
+	found, resolved, err := cl.Exists(repo, Coords{GroupID: "g", ArtifactID: "a", Version: "1.0", Type: "jar"})
+	if err != nil || !found || resolved != "1.0" {
+		t.Errorf("release: found=%v resolved=%q err=%v", found, resolved, err)
+	}
+	found, resolved, err = cl.Exists(repo, Coords{GroupID: "com.example", ArtifactID: "lib", Version: "2.1.0-SNAPSHOT", Type: "jar"})
+	if err != nil || !found || resolved != "2.1.0-20260720.093012-3" {
+		t.Errorf("snapshot: found=%v resolved=%q err=%v", found, resolved, err)
+	}
+	found, _, err = cl.Exists(repo, Coords{GroupID: "g", ArtifactID: "a", Version: "9.9", Type: "jar"})
+	if err != nil || found {
+		t.Errorf("absent: found=%v err=%v", found, err)
+	}
+}
+
+func TestFetchArtifactMetadata(t *testing.T) {
+	f, repo := newFixture(t, "", "")
+	f.put("com/example/lib/maven-metadata.xml", []byte(artifactMetadata))
+	m, err := NewClient().FetchArtifactMetadata(repo, "com.example", "lib")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if m.Versioning.Release != "2.0.0" {
+		t.Errorf("release = %q", m.Versioning.Release)
+	}
+	if _, err := NewClient().FetchArtifactMetadata(repo, "no", "pe"); !errors.Is(err, ErrNotFound) {
+		t.Errorf("absent metadata err = %v", err)
+	}
+}
+
 func TestParseChecksum(t *testing.T) {
 	cases := []struct{ in, want string }{
 		{"ABCDEF0123", "abcdef0123"},
