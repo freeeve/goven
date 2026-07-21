@@ -150,6 +150,22 @@ func TestEffectiveReposCentralOverride(t *testing.T) {
 	}
 }
 
+func TestEffectiveReposAttachesHeaders(t *testing.T) {
+	t.Setenv("NEXUS_TOKEN", "tok123")
+	s := &Settings{
+		Servers: []Server{{ID: "token-repo", Headers: map[string]string{"Authorization": "Bearer ${env.NEXUS_TOKEN}"}}},
+		Profiles: []Profile{{ID: "p", ActiveByDefault: true,
+			Repositories: []Repository{{ID: "token-repo", URL: "https://n/repo", Releases: true}}}},
+	}
+	repos, err := EffectiveRepos(s, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if repos[0].Headers["Authorization"] != "Bearer tok123" {
+		t.Errorf("headers = %+v (env interpolation must apply)", repos[0].Headers)
+	}
+}
+
 func TestSelectProxy(t *testing.T) {
 	proxies := []Proxy{
 		{ID: "inactive", Active: false, Protocol: "https", Host: "p1"},

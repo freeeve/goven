@@ -147,6 +147,23 @@ func TestDownloadAuth(t *testing.T) {
 	}
 }
 
+func TestCustomHeadersSent(t *testing.T) {
+	var got atomic.Value
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got.Store(r.Header.Get("Authorization"))
+		w.Write([]byte("ok"))
+	}))
+	defer srv.Close()
+	repo := RemoteRepo{ID: "t", URL: srv.URL, Releases: true,
+		Headers: map[string]string{"Authorization": "Bearer tok123"}}
+	if _, err := NewClient().GetBytes(repo, "any"); err != nil {
+		t.Fatal(err)
+	}
+	if got.Load() != "Bearer tok123" {
+		t.Errorf("Authorization header = %q", got.Load())
+	}
+}
+
 func TestNotFound(t *testing.T) {
 	_, repo := newFixture(t, "", "")
 	err := NewClient().Download(repo, "g/a/1.0/missing.jar", filepath.Join(t.TempDir(), "x.jar"))

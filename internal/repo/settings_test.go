@@ -10,6 +10,15 @@ const sampleSettings = `<?xml version="1.0"?>
   <localRepository>/tmp/repo</localRepository>
   <servers>
     <server><id>nexus</id><username>deployer</username><password>${env.NEXUS_PASS}</password></server>
+    <server>
+      <id>token-repo</id>
+      <configuration>
+        <httpHeaders>
+          <property><name>Authorization</name><value>Bearer ${env.NEXUS_TOKEN}</value></property>
+          <property><name>X-Custom</name><value>fixed</value></property>
+        </httpHeaders>
+      </configuration>
+    </server>
   </servers>
   <mirrors>
     <mirror><id>corp-mirror</id><mirrorOf>central</mirrorOf><url>https://nexus.corp/repository/maven-central/</url></mirror>
@@ -56,8 +65,11 @@ func TestParseSettings(t *testing.T) {
 	if s.LocalRepository != "/tmp/repo" {
 		t.Errorf("localRepository = %q", s.LocalRepository)
 	}
-	if len(s.Servers) != 1 || s.Servers[0].ID != "nexus" || s.Servers[0].Username != "deployer" {
+	if len(s.Servers) != 2 || s.Servers[0].ID != "nexus" || s.Servers[0].Username != "deployer" {
 		t.Errorf("servers = %+v", s.Servers)
+	}
+	if h := s.Servers[1].Headers; h["X-Custom"] != "fixed" || h["Authorization"] != "Bearer ${env.NEXUS_TOKEN}" {
+		t.Errorf("token-repo headers = %+v", h)
 	}
 	if len(s.Mirrors) != 1 || s.Mirrors[0].MirrorOf != "central" {
 		t.Errorf("mirrors = %+v", s.Mirrors)

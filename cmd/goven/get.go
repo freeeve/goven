@@ -97,6 +97,12 @@ func effectiveRepos(g *globalOpts, override string) ([]repo.RemoteRepo, *repo.Se
 					return nil, nil, fmt.Errorf("server %q: %w", id, err)
 				}
 				rr.Password = pw
+				if len(srv.Headers) > 0 {
+					rr.Headers = make(map[string]string, len(srv.Headers))
+					for k, v := range srv.Headers {
+						rr.Headers[k] = repo.Interpolate(v, props)
+					}
+				}
 				break
 			}
 		}

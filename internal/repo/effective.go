@@ -21,7 +21,8 @@ type RemoteRepo struct {
 	Snapshots bool
 	Username  string
 	Password  string
-	MirrorID  string // non-empty when a mirror redirected this repository
+	Headers   map[string]string // extra request headers from the server config
+	MirrorID  string            // non-empty when a mirror redirected this repository
 	Proxy     *Proxy
 }
 
@@ -246,6 +247,12 @@ func EffectiveRepos(s *Settings, requested []string, cmdProps map[string]string)
 					return nil, fmt.Errorf("server %q: %w", credID, err)
 				}
 				rr.Password = pw
+				if len(srv.Headers) > 0 {
+					rr.Headers = make(map[string]string, len(srv.Headers))
+					for k, v := range srv.Headers {
+						rr.Headers[k] = Interpolate(v, props)
+					}
+				}
 				break
 			}
 		}

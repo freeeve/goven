@@ -25,10 +25,13 @@ type Settings struct {
 }
 
 // Server holds credentials for a repository or mirror, matched by ID.
+// Headers carries <configuration><httpHeaders> entries, e.g. bearer-token
+// Authorization headers for repositories that do not use basic auth.
 type Server struct {
 	ID       string
 	Username string
 	Password string
+	Headers  map[string]string
 }
 
 // Mirror redirects requests for the repositories matched by MirrorOf to URL.
@@ -88,9 +91,15 @@ type xmlSettings struct {
 }
 
 type xmlServer struct {
-	ID       string `xml:"id"`
-	Username string `xml:"username"`
-	Password string `xml:"password"`
+	ID            string `xml:"id"`
+	Username      string `xml:"username"`
+	Password      string `xml:"password"`
+	Configuration *struct {
+		HTTPHeaders []struct {
+			Name  string `xml:"name"`
+			Value string `xml:"value"`
+		} `xml:"httpHeaders>property"`
+	} `xml:"configuration"`
 }
 
 type xmlMirror struct {
@@ -171,7 +180,14 @@ func ParseSettings(r io.Reader) (*Settings, error) {
 		ActiveProfiles:  x.ActiveProfiles,
 	}
 	for _, v := range x.Servers {
-		s.Servers = append(s.Servers, Server(v))
+		srv := Server{ID: v.ID, Username: v.Username, Password: v.Password}
+		if v.Configuration != nil && len(v.Configuration.HTTPHeaders) > 0 {
+			srv.Headers = map[string]string{}
+			for _, h := range v.Configuration.HTTPHeaders {
+				srv.Headers[h.Name] = h.Value
+			}
+		}
+		s.Servers = append(s.Servers, srv)
 	}
 	for _, v := range x.Mirrors {
 		s.Mirrors = append(s.Mirrors, Mirror(v))

@@ -101,6 +101,9 @@ func (cl *Client) do(repo RemoteRepo, method, path string, body func() (io.ReadC
 		if repo.Username != "" {
 			req.SetBasicAuth(repo.Username, repo.Password)
 		}
+		for k, v := range repo.Headers {
+			req.Header.Set(k, v)
+		}
 		resp, err := cl.httpClient(repo).Do(req)
 		if err != nil {
 			lastErr = err
