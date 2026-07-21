@@ -158,6 +158,25 @@ func BenchmarkPutFile4MB(b *testing.B) {
 	}
 }
 
+// BenchmarkPutFile64MB sizes the hash pre-pass realistically (fat jars,
+// wheelhouse tarballs): at this size hashing is a visible fraction of the
+// upload wall time.
+func BenchmarkPutFile64MB(b *testing.B) {
+	repo := externalRepo(b)
+	cl := NewClient()
+	local := filepath.Join(b.TempDir(), "big.jar")
+	if err := os.WriteFile(local, bytes.Repeat([]byte{0x5a}, 64<<20), 0o644); err != nil {
+		b.Fatal(err)
+	}
+	b.SetBytes(64 << 20)
+	b.ReportAllocs()
+	for b.Loop() {
+		if err := cl.PutFile(repo, "g/a/3.0/a-3.0.jar", local); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
 func BenchmarkDeploySnapshot64KB(b *testing.B) {
 	repo := externalRepo(b)
 	cl := NewClient()

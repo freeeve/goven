@@ -138,22 +138,35 @@ func (cl *Client) PutBytes(repo RemoteRepo, path string, data []byte) error {
 }
 
 // PutFile uploads a local file with checksum sidecars, streaming the content
-// rather than holding it in memory.
+// rather than holding it in memory. The digest pass runs concurrently with
+// the main upload (both read from page cache; the sidecar uploads need the
+// digests only after the main PUT), unless the client is Sequential.
 func (cl *Client) PutFile(repo RemoteRepo, path, localFile string) error {
-	f, err := os.Open(localFile)
+	info, err := os.Stat(localFile)
 	if err != nil {
-		return err
-	}
-	info, err := f.Stat()
-	if err != nil {
-		f.Close()
 		return err
 	}
 	size := info.Size()
-	hashes, err := newPublishHashes(f)
-	f.Close()
-	if err != nil {
-		return err
+
+	type hashResult struct {
+		hashes []hash.Hash
+		err    error
+	}
+	hashCh := make(chan hashResult, 1)
+	hashPass := func() {
+		f, err := os.Open(localFile)
+		if err != nil {
+			hashCh <- hashResult{err: err}
+			return
+		}
+		defer f.Close()
+		hashes, err := newPublishHashes(f)
+		hashCh <- hashResult{hashes: hashes, err: err}
+	}
+	if cl.Sequential {
+		hashPass()
+	} else {
+		go hashPass()
 	}
 
 	if err := cl.put(repo, path, func() (io.ReadCloser, int64) {
@@ -165,7 +178,11 @@ func (cl *Client) PutFile(repo RemoteRepo, path, localFile string) error {
 	}); err != nil {
 		return err
 	}
-	return cl.putChecksums(repo, path, hashes)
+	hr := <-hashCh
+	if hr.err != nil {
+		return hr.err
+	}
+	return cl.putChecksums(repo, path, hr.hashes)
 }
 
 // put issues one PUT and discards the response body.
