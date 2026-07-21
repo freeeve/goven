@@ -1,6 +1,7 @@
 package repo
 
 import (
+	"bytes"
 	"crypto/md5"
 	"crypto/sha1"
 	"crypto/sha256"
@@ -123,22 +124,56 @@ func (cl *Client) do(repo RemoteRepo, method, path string, body func() (io.ReadC
 // maxMetaBytes bounds in-memory fetches of metadata and checksum files.
 const maxMetaBytes = 16 << 20
 
-// GetBytes fetches a small repository file (metadata, checksums) into
-// memory, sized from Content-Length to avoid growth reallocations.
+// metaBufPool holds reusable buffers for goven's internal metadata and
+// checksum-sidecar fetches, so repeated repository operations settle at zero
+// buffer allocations.
+var metaBufPool = sync.Pool{New: func() any {
+	b := make([]byte, 0, 32<<10)
+	return &b
+}}
+
+// GetBytes fetches a small repository file (metadata, checksums) into a
+// freshly allocated buffer.
 func (cl *Client) GetBytes(repo RemoteRepo, path string) ([]byte, error) {
+	return cl.GetBytesInto(repo, path, nil)
+}
+
+// GetBytesInto fetches a small repository file into buf, reusing its capacity
+// when sufficient (buf may be nil). It returns the possibly regrown buffer,
+// sized from Content-Length when the server provides one; content beyond
+// maxMetaBytes is truncated, matching the previous LimitReader behavior.
+func (cl *Client) GetBytesInto(repo RemoteRepo, path string, buf []byte) ([]byte, error) {
 	resp, err := cl.do(repo, http.MethodGet, path, nil)
 	if err != nil {
 		return nil, err
 	}
 	defer resp.Body.Close()
 	if n := resp.ContentLength; n > 0 && n <= maxMetaBytes {
-		buf := make([]byte, n)
+		if int64(cap(buf)) < n {
+			buf = make([]byte, n)
+		} else {
+			buf = buf[:n]
+		}
 		if _, err := io.ReadFull(resp.Body, buf); err != nil {
 			return nil, fmt.Errorf("read %s: %w", path, err)
 		}
 		return buf, nil
 	}
-	return io.ReadAll(io.LimitReader(resp.Body, maxMetaBytes))
+	buf = buf[:0]
+	for int64(len(buf)) < maxMetaBytes {
+		if len(buf) == cap(buf) {
+			buf = append(buf, 0)[:len(buf)]
+		}
+		n, err := resp.Body.Read(buf[len(buf):cap(buf)])
+		buf = buf[:len(buf)+n]
+		if err == io.EOF {
+			return buf, nil
+		}
+		if err != nil {
+			return nil, fmt.Errorf("read %s: %w", path, err)
+		}
+	}
+	return buf[:maxMetaBytes], nil
 }
 
 // checksumAlgos lists remote checksum sidecars in verification preference
@@ -216,14 +251,17 @@ func (cl *Client) Download(repo RemoteRepo, path, destFile string) error {
 // findChecksum locates the strongest checksum sidecar the repository
 // publishes for path. Absent sidecars are skipped; transport errors abort.
 func (cl *Client) findChecksum(repo RemoteRepo, path string) sidecarResult {
+	bp := metaBufPool.Get().(*[]byte)
+	defer metaBufPool.Put(bp)
 	for i, a := range checksumAlgos {
-		remote, err := cl.GetBytes(repo, path+"."+a.ext)
+		remote, err := cl.GetBytesInto(repo, path+"."+a.ext, (*bp)[:0])
 		if errors.Is(err, ErrNotFound) {
 			continue
 		}
 		if err != nil {
 			return sidecarResult{err: fmt.Errorf("fetch %s checksum: %w", a.ext, err)}
 		}
+		*bp = remote
 		return sidecarResult{algo: i, want: parseChecksum(string(remote))}
 	}
 	return sidecarResult{algo: -1}
@@ -261,14 +299,17 @@ func (cl *Client) ResolveVersion(repo RemoteRepo, c Coords) (string, error) {
 	if !c.IsSnapshot() {
 		return c.Version, nil
 	}
-	raw, err := cl.GetBytes(repo, c.VersionMetadataPath())
+	bp := metaBufPool.Get().(*[]byte)
+	defer metaBufPool.Put(bp)
+	raw, err := cl.GetBytesInto(repo, c.VersionMetadataPath(), (*bp)[:0])
 	if errors.Is(err, ErrNotFound) {
 		return c.Version, nil
 	}
 	if err != nil {
 		return "", err
 	}
-	m, err := ParseMetadata(strings.NewReader(string(raw)))
+	*bp = raw
+	m, err := ParseMetadata(bytes.NewReader(raw))
 	if err != nil {
 		return "", fmt.Errorf("%s: %w", c.VersionMetadataPath(), err)
 	}

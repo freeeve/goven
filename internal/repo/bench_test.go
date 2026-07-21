@@ -184,6 +184,22 @@ func BenchmarkGetBytes64KB(b *testing.B) {
 	}
 }
 
+func BenchmarkGetBytesInto64KB(b *testing.B) {
+	repo := externalRepo(b)
+	cl := NewClient()
+	seedRaw(b, cl, repo, "meta.xml", bytes.Repeat([]byte{'x'}, 64<<10))
+	var buf []byte
+	b.SetBytes(64 << 10)
+	b.ReportAllocs()
+	for b.Loop() {
+		var err error
+		buf, err = cl.GetBytesInto(repo, "meta.xml", buf[:0])
+		if err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
 func BenchmarkCoordsPaths(b *testing.B) {
 	c := Coords{GroupID: "com.example.deeply.nested.group", ArtifactID: "artifact-name", Version: "2.1.0-SNAPSHOT", Type: "jar", Classifier: "sources"}
 	b.ReportAllocs()

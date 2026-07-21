@@ -184,8 +184,11 @@ func (cl *Client) Deploy(repo RemoteRepo, c Coords, artifactFile string, pom []b
 // fresh document for the coordinate. versionLevel selects the SNAPSHOT
 // (modelVersion 1.1.0, with <version>) form over the artifact-level form.
 func (cl *Client) fetchOrInitMetadata(repo RemoteRepo, path string, c Coords, versionLevel bool) (*Metadata, error) {
-	raw, err := cl.GetBytes(repo, path)
+	bp := metaBufPool.Get().(*[]byte)
+	defer metaBufPool.Put(bp)
+	raw, err := cl.GetBytesInto(repo, path, (*bp)[:0])
 	if err == nil {
+		*bp = raw
 		m, perr := ParseMetadata(bytes.NewReader(raw))
 		if perr == nil {
 			return m, nil

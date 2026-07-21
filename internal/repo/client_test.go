@@ -222,6 +222,50 @@ func TestFetchArtifactPolicyFiltering(t *testing.T) {
 	}
 }
 
+func TestGetBytesIntoReusesCapacity(t *testing.T) {
+	f, repo := newFixture(t, "", "")
+	f.files["meta.xml"] = bytes.Repeat([]byte{'x'}, 1024)
+	cl := NewClient()
+
+	buf := make([]byte, 0, 4096)
+	got, err := cl.GetBytesInto(repo, "meta.xml", buf)
+	if err != nil {
+		t.Fatalf("GetBytesInto: %v", err)
+	}
+	if len(got) != 1024 || &got[0] != &buf[:1][0] {
+		t.Errorf("len=%d; buffer with sufficient capacity must be reused, not reallocated", len(got))
+	}
+
+	small := make([]byte, 0, 8)
+	got, err = cl.GetBytesInto(repo, "meta.xml", small)
+	if err != nil || len(got) != 1024 {
+		t.Errorf("undersized buffer: len=%d err=%v (must grow)", len(got), err)
+	}
+
+	got, err = cl.GetBytesInto(repo, "meta.xml", nil)
+	if err != nil || len(got) != 1024 {
+		t.Errorf("nil buffer: len=%d err=%v", len(got), err)
+	}
+}
+
+func TestGetBytesIntoUnknownLength(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Transfer-Encoding", "chunked")
+		w.(http.Flusher).Flush()
+		w.Write(bytes.Repeat([]byte{'y'}, 3000))
+	}))
+	defer srv.Close()
+	repo := RemoteRepo{ID: "chunked", URL: srv.URL, Releases: true}
+
+	got, err := NewClient().GetBytesInto(repo, "any", make([]byte, 0, 16))
+	if err != nil {
+		t.Fatalf("GetBytesInto chunked: %v", err)
+	}
+	if len(got) != 3000 {
+		t.Errorf("len = %d, want 3000", len(got))
+	}
+}
+
 func TestParseChecksum(t *testing.T) {
 	cases := []struct{ in, want string }{
 		{"ABCDEF0123", "abcdef0123"},
