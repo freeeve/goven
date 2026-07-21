@@ -55,11 +55,13 @@ goven does the same repository operations natively:
 
 ## Install
 
-```sh
-go install github.com/freeeve/goven@latest
-```
+Download a prebuilt binary from
+[Releases](https://github.com/freeeve/goven/releases) (linux/macOS/windows,
+amd64/arm64), or build from source:
 
-Or download a release binary (coming soon).
+```sh
+go install github.com/freeeve/goven/cmd/goven@latest
+```
 
 ## Usage
 
@@ -72,13 +74,27 @@ goven get com.example:my-lib:2.1.0-SNAPSHOT:jar:sources -o build/deps/
 
 Deploy an artifact — a drop-in replacement for `mvn deploy:deploy-file`,
 including SNAPSHOT timestamped versions, buildNumber increments, checksum
-sidecars (md5/sha1/sha256), and `maven-metadata.xml` maintenance:
+sidecars (md5/sha1/sha256), and `maven-metadata.xml` maintenance. Files
+upload concurrently, and attached classifiers land in a single metadata
+update (something running deploy-file per file cannot do safely):
 
 ```sh
 goven deploy build/lib.jar --gav com.example:lib:2.1.0 --repo nexus::https://nexus.corp/repository/releases
+goven deploy lib.jar --gav com.example:lib:2.1.0 \
+  --attach lib-sources.jar:sources --attach lib-javadoc.jar:javadoc --repo nexus::…
 # or keep your existing mvn CLI line and just swap the command name:
 goven deploy -Dfile=build/lib.jar -DgroupId=com.example -DartifactId=lib \
   -Dversion=2.1.0-SNAPSHOT -DrepositoryId=nexus -Durl=https://nexus.corp/repository/snapshots
+```
+
+Query and promote:
+
+```sh
+goven latest com.example:lib --json     # release/latest/version list
+goven exists com.example:lib:2.1.0      # exit 0/1 -- CI double-deploy guard
+goven copy com.example:lib:2.1.0 \
+  --from staging::https://nexus.corp/repository/staging \
+  --to releases::https://nexus.corp/repository/releases
 ```
 
 Check your repository configuration — which settings files were loaded, which
@@ -115,9 +131,10 @@ does not run builds or plugins.
 - Profile activation supports `<activeByDefault>`, `<activeProfiles>`, `-P`
   (with `!` deactivation), and property-based activation. JDK/OS/file-based
   activation rules are not yet implemented.
-- Encrypted passwords (`settings-security.xml`) are not yet supported; use
-  plaintext or environment-variable interpolation (`${env.NAME}`) in
-  `settings.xml`.
+- Encrypted passwords are fully supported: `settings-security.xml` (including
+  `<relocation>`) is read from `~/.m2` or `-Dsettings.security=<path>`, and
+  `{...}` server passwords decrypt exactly as Maven's `--encrypt-password`
+  produces them. Bearer tokens work via `<server><configuration><httpHeaders>`.
 - One deliberate safety divergence: when deploying with a classifier, goven
   does not generate a POM by default (deploy-file's generated POM would land
   on the classifier-less path and overwrite the main artifact's POM). Pass

@@ -1,0 +1,46 @@
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: tests
+        run: go test -race -count=1 ./...
+      - name: cross-compile
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME#v}"
+          mkdir -p dist
+          for target in linux/amd64 linux/arm64 darwin/amd64 darwin/arm64 windows/amd64; do
+            goos=${target%/*} goarch=${target#*/}
+            bin=goven
+            [ "$goos" = windows ] && bin=goven.exe
+            CGO_ENABLED=0 GOOS=$goos GOARCH=$goarch \
+              go build -trimpath -ldflags "-s -w -X main.version=$version" -o "$bin" ./cmd/goven
+            name="goven_${version}_${goos}_${goarch}"
+            if [ "$goos" = windows ]; then
+              zip -q "dist/$name.zip" "$bin" LICENSE README.md
+            else
+              tar czf "dist/$name.tar.gz" "$bin" LICENSE README.md
+            fi
+            rm "$bin"
+          done
+          (cd dist && shasum -a 256 * > checksums.txt)
+      - name: create release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" dist/* \
+            --title "goven $GITHUB_REF_NAME" \
+            --generate-notes
