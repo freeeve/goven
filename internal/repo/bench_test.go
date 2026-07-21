@@ -47,16 +47,22 @@ func benchServerBinary() (string, error) {
 // fixture server and returns it as a repository.
 func externalRepo(b *testing.B) RemoteRepo {
 	b.Helper()
-	repo := RemoteRepo{ID: "bench", Releases: true, Snapshots: true}
 	if url := os.Getenv("GOVEN_BENCH_URL"); url != "" {
-		repo.URL = strings.TrimRight(url, "/")
-		return repo
+		return RemoteRepo{ID: "bench", URL: strings.TrimRight(url, "/"), Releases: true, Snapshots: true}
 	}
+	return externalRepoLatency(b, 0)
+}
+
+// externalRepoLatency starts an out-of-process fixture server that sleeps the
+// given duration before every response, simulating a remote repository's RTT.
+func externalRepoLatency(b *testing.B, latency time.Duration) RemoteRepo {
+	b.Helper()
+	repo := RemoteRepo{ID: "bench", Releases: true, Snapshots: true}
 	bin, err := benchServerBinary()
 	if err != nil {
 		b.Fatal(err)
 	}
-	cmd := exec.Command(bin)
+	cmd := exec.Command(bin, "-latency", latency.String())
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		b.Fatal(err)
@@ -195,6 +201,50 @@ func BenchmarkGetBytesInto64KB(b *testing.B) {
 		var err error
 		buf, err = cl.GetBytesInto(repo, "meta.xml", buf[:0])
 		if err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+// benchDeployRTT deploys a 64KB SNAPSHOT against a server simulating a 25ms
+// network round trip, in concurrent or serial upload mode.
+func benchDeployRTT(b *testing.B, sequential bool) {
+	repo := externalRepoLatency(b, 25*time.Millisecond)
+	cl := NewClient()
+	cl.Sequential = sequential
+	local := filepath.Join(b.TempDir(), "up.jar")
+	if err := os.WriteFile(local, bytes.Repeat([]byte{0x5a}, 64<<10), 0o644); err != nil {
+		b.Fatal(err)
+	}
+	c := Coords{GroupID: "g", ArtifactID: "dep", Version: "1.0-SNAPSHOT", Type: "jar"}
+	when := time.Date(2026, 7, 21, 0, 0, 0, 0, time.UTC)
+	b.ReportAllocs()
+	i := 0
+	for b.Loop() {
+		if _, err := cl.Deploy(repo, c, local, []byte("<project/>"), when.Add(time.Duration(i)*time.Second)); err != nil {
+			b.Fatal(err)
+		}
+		i++
+	}
+}
+
+func BenchmarkDeployRTT25msConcurrent(b *testing.B) { benchDeployRTT(b, false) }
+func BenchmarkDeployRTT25msSerial(b *testing.B)     { benchDeployRTT(b, true) }
+
+// BenchmarkGetRTT25ms measures a checksum-verified download against a 25ms-RTT
+// server; sidecar discovery overlaps the body transfer, so this should cost
+// roughly one round trip more than an unverified fetch, not three.
+func BenchmarkGetRTT25ms(b *testing.B) {
+	repo := externalRepoLatency(b, 25*time.Millisecond)
+	cl := NewClient()
+	data := bytes.Repeat([]byte{0xa5}, 256<<10)
+	if err := cl.PutBytes(repo, "g/a/1.0/a-1.0.jar", data); err != nil {
+		b.Fatal(err)
+	}
+	dest := filepath.Join(b.TempDir(), "a.jar")
+	b.ReportAllocs()
+	for b.Loop() {
+		if err := cl.Download(repo, "g/a/1.0/a-1.0.jar", dest); err != nil {
 			b.Fatal(err)
 		}
 	}

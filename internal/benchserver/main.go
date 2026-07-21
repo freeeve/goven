@@ -13,16 +13,23 @@ import (
 	"net/http"
 	"strings"
 	"sync"
+	"time"
 )
 
-// store is the in-memory file map shared by the handler.
+// store is the in-memory file map shared by the handler. A non-zero latency
+// is slept before every response, simulating the round-trip time of a remote
+// repository so concurrency effects can be measured realistically.
 type store struct {
-	mu    sync.RWMutex
-	files map[string][]byte
+	mu      sync.RWMutex
+	files   map[string][]byte
+	latency time.Duration
 }
 
 // ServeHTTP implements PUT (store) and GET/HEAD (serve) over the map.
 func (s *store) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if s.latency > 0 {
+		time.Sleep(s.latency)
+	}
 	path := strings.TrimPrefix(r.URL.Path, "/")
 	if r.Method == http.MethodPut {
 		var buf bytes.Buffer
@@ -54,11 +61,12 @@ func (s *store) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 func main() {
 	addr := flag.String("addr", "127.0.0.1:0", "listen address (port 0 picks a free port)")
+	latency := flag.Duration("latency", 0, "sleep before each response to simulate network RTT")
 	flag.Parse()
 	ln, err := net.Listen("tcp", *addr)
 	if err != nil {
 		log.Fatal(err)
 	}
 	fmt.Printf("LISTEN %s\n", ln.Addr())
-	log.Fatal(http.Serve(ln, &store{files: map[string][]byte{}}))
+	log.Fatal(http.Serve(ln, &store{files: map[string][]byte{}, latency: *latency}))
 }
