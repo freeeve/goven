@@ -1,6 +1,7 @@
 package repo
 
 import (
+	"bytes"
 	"io"
 	"sync"
 )
@@ -17,8 +18,14 @@ var copyBufPool = sync.Pool{New: func() any {
 // instead of delegating to the destination's own copy path.
 type writerOnly struct{ io.Writer }
 
-// copyPooled copies src to dst through a pooled 1MB buffer.
+// copyPooled copies src to dst through a pooled 1MB buffer. In-memory
+// sources short-circuit through WriteTo: they need no transfer buffer, and
+// skipping the pool keeps GC-cleared pools from re-allocating 1MB buffers
+// for byte-sized copies.
 func copyPooled(dst io.Writer, src io.Reader) (int64, error) {
+	if r, ok := src.(*bytes.Reader); ok {
+		return r.WriteTo(writerOnly{dst})
+	}
 	bp := copyBufPool.Get().(*[]byte)
 	defer copyBufPool.Put(bp)
 	return io.CopyBuffer(writerOnly{dst}, src, *bp)

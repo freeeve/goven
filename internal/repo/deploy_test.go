@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -219,6 +220,36 @@ func TestDeployConcurrentDistinctGAVs(t *testing.T) {
 		if m.Versioning.Release != "1.0.0" {
 			t.Errorf("a%d metadata = %+v", i, m.Versioning)
 		}
+	}
+}
+
+// TestDeployMetadataAfterFiles asserts the protocol's ordering constraint
+// survives concurrent uploads: metadata documents are only written after
+// every file they reference has landed.
+func TestDeployMetadataAfterFiles(t *testing.T) {
+	f, repo := newFixture(t, "", "")
+	c := Coords{GroupID: "g", ArtifactID: "ord", Version: "1.0-SNAPSHOT", Type: "jar"}
+	if _, err := NewClient().Deploy(repo, c, writeTempArtifact(t, "x"), []byte("<project/>"), deployTime); err != nil {
+		t.Fatalf("Deploy: %v", err)
+	}
+	f.mu.RLock()
+	order := append([]string{}, f.putOrder...)
+	f.mu.RUnlock()
+	idx := func(suffix string) int {
+		for i, p := range order {
+			if strings.HasSuffix(p, suffix) {
+				return i
+			}
+		}
+		t.Fatalf("no PUT ending in %q in %v", suffix, order)
+		return -1
+	}
+	jar := idx("-1.jar")
+	pom := idx("-1.pom")
+	versionMeta := idx("1.0-SNAPSHOT/maven-metadata.xml")
+	artifactMeta := idx("ord/maven-metadata.xml")
+	if versionMeta < jar || versionMeta < pom || artifactMeta < jar || artifactMeta < pom {
+		t.Errorf("metadata written before files: order = %v", order)
 	}
 }
 

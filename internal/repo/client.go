@@ -28,10 +28,11 @@ var ErrNotFound = errors.New("not found")
 // proxy support, retries, and checksum verification. It is safe for
 // concurrent use.
 type Client struct {
-	UserAgent string
-	Retries   int // total attempts per request (default 3)
-	mu        sync.Mutex
-	transport map[string]*http.Client
+	UserAgent  string
+	Retries    int  // total attempts per request (default 3)
+	Sequential bool // disable concurrent uploads within Deploy
+	mu         sync.Mutex
+	transport  map[string]*http.Client
 }
 
 // NewClient returns a Client with default retry policy and timeouts.
@@ -62,6 +63,7 @@ func (cl *Client) httpClient(repo RemoteRepo) *http.Client {
 		DialContext:           (&net.Dialer{Timeout: 10 * time.Second}).DialContext,
 		TLSHandshakeTimeout:   10 * time.Second,
 		ResponseHeaderTimeout: 30 * time.Second,
+		MaxIdleConnsPerHost:   8, // concurrent deploy uploads reuse these
 	}
 	if p := repo.Proxy; p != nil {
 		u := &url.URL{Scheme: "http", Host: fmt.Sprintf("%s:%d", p.Host, p.Port)}
@@ -106,14 +108,14 @@ func (cl *Client) do(repo RemoteRepo, method, path string, body func() (io.ReadC
 		}
 		switch {
 		case resp.StatusCode == http.StatusNotFound:
-			resp.Body.Close()
+			drainAndClose(resp.Body)
 			return nil, fmt.Errorf("%s: %w", target, ErrNotFound)
 		case resp.StatusCode >= 500 || resp.StatusCode == http.StatusTooManyRequests:
-			resp.Body.Close()
+			drainAndClose(resp.Body)
 			lastErr = fmt.Errorf("%s: HTTP %d", target, resp.StatusCode)
 			continue
 		case resp.StatusCode >= 400:
-			resp.Body.Close()
+			drainAndClose(resp.Body)
 			return nil, fmt.Errorf("%s: HTTP %d", target, resp.StatusCode)
 		}
 		return resp, nil
@@ -157,6 +159,9 @@ func (cl *Client) GetBytesInto(repo RemoteRepo, path string, buf []byte) ([]byte
 		if _, err := io.ReadFull(resp.Body, buf); err != nil {
 			return nil, fmt.Errorf("read %s: %w", path, err)
 		}
+		// No explicit EOF read needed: the transport reuses connections
+		// whose bodies are fully consumed per Content-Length, and the extra
+		// read measurably slows the hot path (see TestConnectionReuse).
 		return buf, nil
 	}
 	buf = buf[:0]
@@ -265,6 +270,14 @@ func (cl *Client) findChecksum(repo RemoteRepo, path string) sidecarResult {
 		return sidecarResult{algo: i, want: parseChecksum(string(remote))}
 	}
 	return sidecarResult{algo: -1}
+}
+
+// drainAndClose consumes a bounded remainder of a response body before
+// closing it, letting the transport return the connection to the idle pool
+// instead of tearing it down. Bodies larger than the bound are abandoned.
+func drainAndClose(body io.ReadCloser) {
+	io.Copy(io.Discard, io.LimitReader(body, 64<<10))
+	body.Close()
 }
 
 // hashFile computes the hex digest of a file with one streaming pass through

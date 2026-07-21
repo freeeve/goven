@@ -7,22 +7,26 @@ import (
 	"encoding/hex"
 	"errors"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
 )
 
 // fixtureServer is an in-memory maven2-layout repository for tests, serving
-// GETs and accepting PUTs like a hosted Nexus repository.
+// GETs and accepting PUTs like a hosted Nexus repository. putOrder records
+// the sequence of PUT paths for upload-ordering assertions.
 type fixtureServer struct {
-	mu    sync.RWMutex
-	files map[string][]byte
-	user  string
-	pass  string
+	mu       sync.RWMutex
+	files    map[string][]byte
+	putOrder []string
+	user     string
+	pass     string
 }
 
 // put stores a file plus its sha1 and sha256 checksum sidecars.
@@ -67,6 +71,7 @@ func (f *fixtureServer) handler() http.Handler {
 			}
 			f.mu.Lock()
 			f.files[path] = buf.Bytes()
+			f.putOrder = append(f.putOrder, path)
 			f.mu.Unlock()
 			w.WriteHeader(http.StatusCreated)
 			return
@@ -245,6 +250,48 @@ func TestGetBytesIntoReusesCapacity(t *testing.T) {
 	got, err = cl.GetBytesInto(repo, "meta.xml", nil)
 	if err != nil || len(got) != 1024 {
 		t.Errorf("nil buffer: len=%d err=%v", len(got), err)
+	}
+}
+
+// TestConnectionReuse locks in the transport-reuse behavior the client
+// relies on: Content-Length bodies fully consumed by GetBytes reuse their
+// connection without an explicit EOF read, and error responses with unread
+// bodies must be drained (drainAndClose) rather than closed, or the
+// connection is torn down.
+func TestConnectionReuse(t *testing.T) {
+	var conns atomic.Int32
+	body := bytes.Repeat([]byte{'z'}, 2048)
+	srv := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "missing") {
+			// Non-empty 404 body, like a real repository manager's error page.
+			http.Error(w, "<html>not found, with a body worth draining</html>", http.StatusNotFound)
+			return
+		}
+		w.Header().Set("Content-Length", "2048")
+		w.Write(body)
+	}))
+	srv.Config.ConnState = func(c net.Conn, s http.ConnState) {
+		if s == http.StateNew {
+			conns.Add(1)
+		}
+	}
+	srv.Start()
+	defer srv.Close()
+	repo := RemoteRepo{ID: "reuse", URL: srv.URL, Releases: true}
+
+	cl := NewClient()
+	for range 5 {
+		if _, err := cl.GetBytes(repo, "some/file"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for range 5 {
+		if _, err := cl.GetBytes(repo, "some/missing"); !errors.Is(err, ErrNotFound) {
+			t.Fatalf("expected ErrNotFound, got %v", err)
+		}
+	}
+	if got := conns.Load(); got != 1 {
+		t.Errorf("server saw %d connections for 10 sequential requests, want 1 (keep-alive broken)", got)
 	}
 }
 

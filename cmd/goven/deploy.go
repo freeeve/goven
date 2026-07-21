@@ -30,6 +30,7 @@ func runDeploy(g *globalOpts, args []string) error {
 	gav := fs.String("gav", "", "coordinates groupId:artifactId:version[:type[:classifier]]")
 	pomFile := fs.String("pom", "", "POM file to upload alongside the artifact")
 	repoFlag := fs.String("repo", "", "target repository, as [id::]url (id looks up settings credentials)")
+	serial := fs.Bool("serial", false, "upload files one at a time instead of concurrently")
 	if err := fs.Parse(reorderArgs(args, map[string]bool{"gav": true, "pom": true, "repo": true})); err != nil {
 		return err
 	}
@@ -65,7 +66,9 @@ func runDeploy(g *globalOpts, args []string) error {
 	}
 
 	start := time.Now()
-	res, err := repo.NewClient().Deploy(dest, coords, file, pomBytes, time.Now())
+	cl := repo.NewClient()
+	cl.Sequential = *serial
+	res, err := cl.Deploy(dest, coords, file, pomBytes, time.Now())
 	if err != nil {
 		return err
 	}
