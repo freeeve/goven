@@ -112,7 +112,10 @@ func TestEffectiveRepos(t *testing.T) {
 	s := parseSample(t)
 	t.Setenv("NEXUS_PASS", "hunter2")
 
-	repos := EffectiveRepos(s, []string{"nexus-prod"}, nil)
+	repos, err := EffectiveRepos(s, []string{"nexus-prod"}, nil)
+	if err != nil {
+		t.Fatalf("EffectiveRepos: %v", err)
+	}
 	if len(repos) != 2 {
 		t.Fatalf("repos = %d, want 2 (nexus + central)", len(repos))
 	}
@@ -138,7 +141,10 @@ func TestEffectiveReposCentralOverride(t *testing.T) {
 		ActiveByDefault: true,
 		Repositories:    []Repository{{ID: "central", URL: "https://mirror.example/m2", Releases: true}},
 	}}}
-	repos := EffectiveRepos(s, nil, nil)
+	repos, err := EffectiveRepos(s, nil, nil)
+	if err != nil {
+		t.Fatalf("EffectiveRepos: %v", err)
+	}
 	if len(repos) != 1 || repos[0].URL != "https://mirror.example/m2" {
 		t.Errorf("repos = %+v (profile central must replace default)", repos)
 	}

@@ -71,7 +71,11 @@ func effectiveRepos(g *globalOpts, override string) ([]repo.RemoteRepo, *repo.Se
 	if globalPath == "" {
 		globalPath = repo.DefaultGlobalSettingsPath()
 	}
-	settings, _, err := repo.LoadSettings(userPath, globalPath)
+	securityPath := g.props["settings.security"]
+	if securityPath == "" {
+		securityPath = repo.DefaultSecurityPath()
+	}
+	settings, _, err := repo.LoadSettings(userPath, globalPath, securityPath)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -88,11 +92,19 @@ func effectiveRepos(g *globalOpts, override string) ([]repo.RemoteRepo, *repo.Se
 		for _, srv := range settings.Servers {
 			if srv.ID == id {
 				rr.Username = repo.Interpolate(srv.Username, props)
-				rr.Password = repo.Interpolate(srv.Password, props)
+				pw, err := repo.ResolvePassword(repo.Interpolate(srv.Password, props), settings.Master)
+				if err != nil {
+					return nil, nil, fmt.Errorf("server %q: %w", id, err)
+				}
+				rr.Password = pw
 				break
 			}
 		}
 		return []repo.RemoteRepo{rr}, settings, nil
 	}
-	return repo.EffectiveRepos(settings, g.profiles, g.props), settings, nil
+	repos, err := repo.EffectiveRepos(settings, g.profiles, g.props)
+	if err != nil {
+		return nil, nil, err
+	}
+	return repos, settings, nil
 }

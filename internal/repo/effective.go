@@ -207,8 +207,9 @@ func EffectiveProps(active []Profile, cmdProps map[string]string) map[string]str
 // EffectiveRepos computes the ordered repository list for the given profile
 // activation: profile repositories first (user settings order), then Maven
 // Central unless an active profile redefines the "central" ID. Mirrors,
-// credentials, proxies, and interpolation are all applied.
-func EffectiveRepos(s *Settings, requested []string, cmdProps map[string]string) []RemoteRepo {
+// credentials (with settings-security decryption), proxies, and
+// interpolation are all applied.
+func EffectiveRepos(s *Settings, requested []string, cmdProps map[string]string) ([]RemoteRepo, error) {
 	active := ActiveProfiles(s, requested, cmdProps)
 	props := EffectiveProps(active, cmdProps)
 
@@ -240,14 +241,18 @@ func EffectiveRepos(s *Settings, requested []string, cmdProps map[string]string)
 		for _, srv := range s.Servers {
 			if srv.ID == credID {
 				rr.Username = Interpolate(srv.Username, props)
-				rr.Password = Interpolate(srv.Password, props)
+				pw, err := ResolvePassword(Interpolate(srv.Password, props), s.Master)
+				if err != nil {
+					return nil, fmt.Errorf("server %q: %w", credID, err)
+				}
+				rr.Password = pw
 				break
 			}
 		}
 		rr.Proxy = selectProxy(s.Proxies, rr.URL)
 		out = append(out, rr)
 	}
-	return out
+	return out, nil
 }
 
 // selectProxy picks the first active proxy whose protocol matches the target

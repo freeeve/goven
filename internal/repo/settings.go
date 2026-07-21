@@ -12,6 +12,8 @@ import (
 
 // Settings models the subset of Maven's settings.xml that governs repository
 // access: servers, mirrors, proxies, and profiles with their repositories.
+// Master carries the decrypted settings-security.xml master password ("" when
+// none), used to decrypt {}-encrypted server passwords.
 type Settings struct {
 	LocalRepository string
 	Servers         []Server
@@ -19,6 +21,7 @@ type Settings struct {
 	Proxies         []Proxy
 	Profiles        []Profile
 	ActiveProfiles  []string
+	Master          string
 }
 
 // Server holds credentials for a repository or mirror, matched by ID.
@@ -240,10 +243,12 @@ func DefaultGlobalSettingsPath() string {
 	return ""
 }
 
-// LoadSettings reads and merges the user and global settings files. Either
-// path may be empty or missing; an empty Settings is returned when neither
-// exists. The returned slice lists the files actually loaded, user first.
-func LoadSettings(userPath, globalPath string) (*Settings, []string, error) {
+// LoadSettings reads and merges the user and global settings files, then
+// loads the settings-security.xml master password from securityPath. Any
+// path may be empty or missing; an empty Settings is returned when nothing
+// exists. The returned slice lists the settings files actually loaded, user
+// first.
+func LoadSettings(userPath, globalPath, securityPath string) (*Settings, []string, error) {
 	var loaded []string
 	parse := func(path string) (*Settings, error) {
 		if path == "" {
@@ -272,7 +277,12 @@ func LoadSettings(userPath, globalPath string) (*Settings, []string, error) {
 	if err != nil {
 		return nil, nil, err
 	}
-	return mergeSettings(user, global), loaded, nil
+	merged := mergeSettings(user, global)
+	merged.Master, err = LoadMasterPassword(securityPath)
+	if err != nil {
+		return nil, nil, err
+	}
+	return merged, loaded, nil
 }
 
 // mergeSettings combines user and global settings with user entries dominant:

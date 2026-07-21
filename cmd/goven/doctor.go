@@ -35,7 +35,11 @@ func runDoctor(g *globalOpts, args []string) error {
 	if globalPath == "" {
 		globalPath = repo.DefaultGlobalSettingsPath()
 	}
-	settings, loaded, err := repo.LoadSettings(userPath, globalPath)
+	securityPath := g.props["settings.security"]
+	if securityPath == "" {
+		securityPath = repo.DefaultSecurityPath()
+	}
+	settings, loaded, err := repo.LoadSettings(userPath, globalPath, securityPath)
 	if err != nil {
 		return err
 	}
@@ -54,7 +58,10 @@ func runDoctor(g *globalOpts, args []string) error {
 	}
 	fmt.Printf("active profiles: %s\n", orNone(strings.Join(ids, ", ")))
 
-	repos := repo.EffectiveRepos(settings, g.profiles, g.props)
+	repos, err := repo.EffectiveRepos(settings, g.profiles, g.props)
+	if err != nil {
+		return err
+	}
 	fmt.Println("effective repositories:")
 	failures := 0
 	for _, r := range repos {
