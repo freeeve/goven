@@ -313,6 +313,36 @@ func (cl *Client) putMetadata(repo RemoteRepo, path string, m *Metadata) error {
 	return nil
 }
 
+// Copy promotes a release artifact and its POM from one repository to
+// another (the staging-to-releases flow), reusing Deploy for target-side
+// checksums and metadata maintenance. The source download is checksum
+// verified. SNAPSHOTs are refused: promotion is a release workflow, and
+// copying a timestamped build would fork its metadata history.
+func (cl *Client) Copy(from, to RemoteRepo, c Coords, now time.Time) (DeployResult, error) {
+	if c.IsSnapshot() {
+		return DeployResult{}, fmt.Errorf("%s: copy supports releases only", c)
+	}
+	tmpDir, err := os.MkdirTemp("", "goven-copy-*")
+	if err != nil {
+		return DeployResult{}, err
+	}
+	defer os.RemoveAll(tmpDir)
+
+	artifactFile := tmpDir + "/" + c.FileName(c.Version)
+	if err := cl.Download(from, c.ArtifactPath(c.Version), artifactFile); err != nil {
+		return DeployResult{}, fmt.Errorf("fetch source artifact: %w", err)
+	}
+	pomCoords := Coords{GroupID: c.GroupID, ArtifactID: c.ArtifactID, Version: c.Version, Type: "pom"}
+	pom, err := cl.GetBytes(from, pomCoords.ArtifactPath(c.Version))
+	if errors.Is(err, ErrNotFound) {
+		return DeployResult{}, fmt.Errorf("source repository has no POM for %s; refusing to promote a broken artifact", c)
+	}
+	if err != nil {
+		return DeployResult{}, fmt.Errorf("fetch source POM: %w", err)
+	}
+	return cl.Deploy(to, c, artifactFile, pom, now)
+}
+
 // nextSnapshotVersion computes the timestamped version for a new SNAPSHOT
 // build and records it in the metadata's snapshot block.
 func nextSnapshotVersion(m *Metadata, c Coords, now time.Time) string {

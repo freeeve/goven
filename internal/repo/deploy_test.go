@@ -295,6 +295,50 @@ func TestDeployMetadataAfterFiles(t *testing.T) {
 	}
 }
 
+func TestCopyPromotesRelease(t *testing.T) {
+	src, from := newFixture(t, "", "")
+	dst, to := newFixture(t, "", "")
+	src.put("g/lib/1.0.0/lib-1.0.0.jar", []byte("promote-me"))
+	src.put("g/lib/1.0.0/lib-1.0.0.pom", []byte("<project/>"))
+	c := Coords{GroupID: "g", ArtifactID: "lib", Version: "1.0.0", Type: "jar"}
+
+	res, err := NewClient().Copy(from, to, c, deployTime)
+	if err != nil {
+		t.Fatalf("Copy: %v", err)
+	}
+	jar, ok := dst.get("g/lib/1.0.0/lib-1.0.0.jar")
+	if !ok || string(jar) != "promote-me" {
+		t.Errorf("target jar = %q ok=%v", jar, ok)
+	}
+	pom, ok := dst.get("g/lib/1.0.0/lib-1.0.0.pom")
+	if !ok || string(pom) != "<project/>" {
+		t.Errorf("target pom = %q ok=%v (source POM must be copied, not regenerated)", pom, ok)
+	}
+	if _, ok := dst.get("g/lib/1.0.0/lib-1.0.0.jar.sha256"); !ok {
+		t.Error("target checksum sidecars missing")
+	}
+	m := fixtureMetadata(t, dst, "g/lib/maven-metadata.xml")
+	if m.Versioning.Release != "1.0.0" {
+		t.Errorf("target metadata = %+v", m.Versioning)
+	}
+	if len(res.Uploaded) != 3 {
+		t.Errorf("Uploaded = %v, want jar+pom+artifact-metadata", res.Uploaded)
+	}
+}
+
+func TestCopyRefusesSnapshotAndBrokenSource(t *testing.T) {
+	src, from := newFixture(t, "", "")
+	_, to := newFixture(t, "", "")
+	cl := NewClient()
+	if _, err := cl.Copy(from, to, Coords{GroupID: "g", ArtifactID: "a", Version: "1.0-SNAPSHOT", Type: "jar"}, deployTime); err == nil {
+		t.Error("snapshot copy must be refused")
+	}
+	src.put("g/nopom/1.0/nopom-1.0.jar", []byte("x"))
+	if _, err := cl.Copy(from, to, Coords{GroupID: "g", ArtifactID: "nopom", Version: "1.0", Type: "jar"}, deployTime); err == nil {
+		t.Error("missing source POM must be refused")
+	}
+}
+
 func TestDeployAuthRequired(t *testing.T) {
 	_, repo := newFixture(t, "deployer", "hunter2")
 	repo.Password = "wrong"
