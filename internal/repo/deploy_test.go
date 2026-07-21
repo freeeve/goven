@@ -223,6 +223,48 @@ func TestDeployConcurrentDistinctGAVs(t *testing.T) {
 	}
 }
 
+func TestDeployWithAttachments(t *testing.T) {
+	f, repo := newFixture(t, "", "")
+	c := Coords{GroupID: "g", ArtifactID: "multi", Version: "1.0-SNAPSHOT", Type: "jar"}
+	main := writeTempArtifact(t, "main")
+	sources := writeTempArtifact(t, "sources-bytes")
+	dist := writeTempArtifact(t, "dist-bytes")
+
+	res, err := NewClient().Deploy(repo, c, main, []byte("<project/>"), deployTime,
+		Attachment{File: sources, Classifier: "sources", Type: "jar"},
+		Attachment{File: dist, Classifier: "dist", Type: "tar.gz"})
+	if err != nil {
+		t.Fatalf("Deploy: %v", err)
+	}
+	base := "g/multi/1.0-SNAPSHOT/multi-1.0-20260721.093012-1"
+	for _, want := range []string{base + ".jar", base + "-sources.jar", base + "-dist.tar.gz", base + ".pom"} {
+		if _, ok := f.get(want); !ok {
+			t.Errorf("missing %s", want)
+		}
+	}
+	if len(res.Uploaded) != 6 {
+		t.Errorf("Uploaded = %v", res.Uploaded)
+	}
+	m := fixtureMetadata(t, f, "g/multi/1.0-SNAPSHOT/maven-metadata.xml")
+	if n := len(m.Versioning.SnapshotVersions.SnapshotVersion); n != 4 {
+		t.Fatalf("snapshotVersions entries = %d, want 4 (jar, pom, sources, dist)", n)
+	}
+	for _, sv := range m.Versioning.SnapshotVersions.SnapshotVersion {
+		if sv.Value != "1.0-20260721.093012-1" {
+			t.Errorf("entry %s/%s = %q (all must share one build in one metadata update)", sv.Classifier, sv.Extension, sv.Value)
+		}
+	}
+}
+
+func TestDeployAttachmentNeedsClassifier(t *testing.T) {
+	_, repo := newFixture(t, "", "")
+	c := Coords{GroupID: "g", ArtifactID: "a", Version: "1.0.0", Type: "jar"}
+	f := writeTempArtifact(t, "x")
+	if _, err := NewClient().Deploy(repo, c, f, nil, deployTime, Attachment{File: f, Type: "jar"}); err == nil {
+		t.Error("classifier-less same-type attachment must be rejected (would overwrite main artifact)")
+	}
+}
+
 // TestDeployMetadataAfterFiles asserts the protocol's ordering constraint
 // survives concurrent uploads: metadata documents are only written after
 // every file they reference has landed.

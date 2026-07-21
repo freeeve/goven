@@ -31,7 +31,9 @@ func runDeploy(g *globalOpts, args []string) error {
 	pomFile := fs.String("pom", "", "POM file to upload alongside the artifact")
 	repoFlag := fs.String("repo", "", "target repository, as [id::]url (id looks up settings credentials)")
 	serial := fs.Bool("serial", false, "upload files one at a time instead of concurrently")
-	if err := fs.Parse(reorderArgs(args, map[string]bool{"gav": true, "pom": true, "repo": true})); err != nil {
+	var attachments attachList
+	fs.Var(&attachments, "attach", "secondary artifact as file:classifier[:type] (repeatable)")
+	if err := fs.Parse(reorderArgs(args, map[string]bool{"gav": true, "pom": true, "repo": true, "attach": true})); err != nil {
 		return err
 	}
 
@@ -64,11 +66,14 @@ func runDeploy(g *globalOpts, args []string) error {
 	if err != nil {
 		return err
 	}
+	if err := attachments.addSideFiles(g.props); err != nil {
+		return err
+	}
 
 	start := time.Now()
 	cl := repo.NewClient()
 	cl.Sequential = *serial
-	res, err := cl.Deploy(dest, coords, file, pomBytes, time.Now())
+	res, err := cl.Deploy(dest, coords, file, pomBytes, time.Now(), attachments...)
 	if err != nil {
 		return err
 	}
@@ -77,6 +82,68 @@ func runDeploy(g *globalOpts, args []string) error {
 		fmt.Printf("  %s\n", p)
 	}
 	fmt.Printf("done in %s\n", time.Since(start).Round(time.Millisecond))
+	return nil
+}
+
+// attachList collects --attach flags ("file:classifier[:type]") and the
+// deploy-file property spelling (-Dfiles/-Dclassifiers/-Dtypes comma lists).
+type attachList []repo.Attachment
+
+// String renders the list for flag help.
+func (a *attachList) String() string {
+	var parts []string
+	for _, att := range *a {
+		parts = append(parts, att.File+":"+att.Classifier+":"+att.Type)
+	}
+	return strings.Join(parts, ",")
+}
+
+// Set parses one file:classifier[:type] value, splitting from the right so
+// the file path may itself contain separators.
+func (a *attachList) Set(s string) error {
+	parts := strings.Split(s, ":")
+	if len(parts) < 2 {
+		return fmt.Errorf("attach %q: want file:classifier[:type]", s)
+	}
+	att := repo.Attachment{Type: "jar"}
+	if len(parts) >= 3 && !strings.Contains(parts[len(parts)-1], "/") {
+		att.Type = parts[len(parts)-1]
+		att.Classifier = parts[len(parts)-2]
+		att.File = strings.Join(parts[:len(parts)-2], ":")
+	} else {
+		att.Classifier = parts[len(parts)-1]
+		att.File = strings.Join(parts[:len(parts)-1], ":")
+	}
+	if att.File == "" || att.Classifier == "" {
+		return fmt.Errorf("attach %q: empty file or classifier", s)
+	}
+	*a = append(*a, att)
+	return nil
+}
+
+// addSideFiles appends attachments given in deploy:deploy-file's property
+// spelling: -Dfiles=a.jar,b.tar -Dclassifiers=sources,dist -Dtypes=jar,tar.
+func (a *attachList) addSideFiles(props map[string]string) error {
+	if props["files"] == "" {
+		return nil
+	}
+	files := strings.Split(props["files"], ",")
+	classifiers := strings.Split(props["classifiers"], ",")
+	types := strings.Split(props["types"], ",")
+	if len(classifiers) != len(files) || len(types) != len(files) {
+		return fmt.Errorf("-Dfiles/-Dclassifiers/-Dtypes must have the same number of entries")
+	}
+	for i := range files {
+		att := repo.Attachment{File: strings.TrimSpace(files[i]),
+			Classifier: strings.TrimSpace(classifiers[i]), Type: strings.TrimSpace(types[i])}
+		if att.Type == "" {
+			att.Type = "jar"
+		}
+		if att.File == "" {
+			return fmt.Errorf("-Dfiles entry %d is empty", i)
+		}
+		*a = append(*a, att)
+	}
 	return nil
 }
 

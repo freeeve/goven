@@ -31,6 +31,15 @@ type DeployResult struct {
 	Uploaded        []string // repository-relative paths, checksums excluded
 }
 
+// Attachment is a secondary artifact (sources, javadoc, a custom classifier)
+// deployed alongside the main artifact under the same GAV in the same
+// metadata transaction.
+type Attachment struct {
+	File       string
+	Classifier string
+	Type       string
+}
+
 // taskGroup runs functions concurrently and reports the first error, like
 // errgroup without the dependency. With seq set it runs everything inline,
 // preserving submission order for debugging and deterministic tests.
@@ -180,9 +189,14 @@ func (cl *Client) put(repo RemoteRepo, path string, body func() (io.ReadCloser, 
 // metadata is only written after every file it references has landed.
 // Concurrent deploys of the same GAV race on the metadata read-modify-write,
 // exactly as they do with Maven itself.
-func (cl *Client) Deploy(repo RemoteRepo, c Coords, artifactFile string, pom []byte, now time.Time) (DeployResult, error) {
+func (cl *Client) Deploy(repo RemoteRepo, c Coords, artifactFile string, pom []byte, now time.Time, attachments ...Attachment) (DeployResult, error) {
 	var res DeployResult
 	now = now.UTC()
+	for _, att := range attachments {
+		if att.Classifier == "" && att.Type == c.Type {
+			return res, fmt.Errorf("attachment %s needs a classifier or a type distinct from the main artifact", att.File)
+		}
+	}
 	resolved := c.Version
 	var versionMeta *Metadata
 	if c.IsSnapshot() {
@@ -215,6 +229,20 @@ func (cl *Client) Deploy(repo RemoteRepo, c Coords, artifactFile string, pom []b
 			return nil
 		})
 	}
+	attPaths := make([]string, len(attachments))
+	for i, att := range attachments {
+		attCoords := Coords{GroupID: c.GroupID, ArtifactID: c.ArtifactID, Version: c.Version,
+			Type: att.Type, Classifier: att.Classifier}
+		attPaths[i] = attCoords.ArtifactPath(resolved)
+		file := att.File
+		path := attPaths[i]
+		files.Go(func() error {
+			if err := cl.PutFile(repo, path, file); err != nil {
+				return fmt.Errorf("upload %s: %w", path, err)
+			}
+			return nil
+		})
+	}
 	files.Go(func() error {
 		var err error
 		artMeta, err = cl.fetchOrInitMetadata(repo, c.ArtifactMetadataPath(), c, false)
@@ -227,10 +255,11 @@ func (cl *Client) Deploy(repo RemoteRepo, c Coords, artifactFile string, pom []b
 	if pom != nil {
 		res.Uploaded = append(res.Uploaded, pomPath)
 	}
+	res.Uploaded = append(res.Uploaded, attPaths...)
 
 	meta := cl.group()
 	if c.IsSnapshot() {
-		mergeSnapshotVersions(versionMeta, c, resolved, pom != nil, now)
+		mergeSnapshotVersions(versionMeta, c, resolved, pom != nil, now, attachments)
 		versionMeta.Versioning.LastUpdated = now.Format(lastUpdatedFormat)
 		meta.Go(func() error { return cl.putMetadata(repo, c.VersionMetadataPath(), versionMeta) })
 	}
@@ -298,7 +327,7 @@ func nextSnapshotVersion(m *Metadata, c Coords, now time.Time) string {
 // mergeSnapshotVersions records the uploaded files in snapshotVersions,
 // replacing prior entries for the same classifier/extension and keeping
 // entries for other classifiers intact.
-func mergeSnapshotVersions(m *Metadata, c Coords, resolved string, withPOM bool, now time.Time) {
+func mergeSnapshotVersions(m *Metadata, c Coords, resolved string, withPOM bool, now time.Time, attachments []Attachment) {
 	if m.Versioning.SnapshotVersions == nil {
 		m.Versioning.SnapshotVersions = &SnapshotVersionList{}
 	}
@@ -318,6 +347,9 @@ func mergeSnapshotVersions(m *Metadata, c Coords, resolved string, withPOM bool,
 	upsert(c.Classifier, c.Type)
 	if withPOM {
 		upsert("", "pom")
+	}
+	for _, att := range attachments {
+		upsert(att.Classifier, att.Type)
 	}
 }
 
