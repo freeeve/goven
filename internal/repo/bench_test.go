@@ -1,40 +1,119 @@
 package repo
 
 import (
+	"bufio"
 	"bytes"
-	"net/http/httptest"
+	"fmt"
+	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 )
 
-// newBenchServer starts the fixture HTTP server for a benchmark.
-func newBenchServer(b *testing.B, f *fixtureServer) string {
-	srv := httptest.NewServer(f.handler())
-	b.Cleanup(srv.Close)
-	return srv.URL
+// Transfer benchmarks run against an out-of-process fixture server
+// (internal/benchserver) so ns/op and allocs/op measure only the client.
+// Set GOVEN_BENCH_URL to benchmark against an already-running server (for
+// example a real Nexus) instead of the spawned one.
+
+var (
+	benchBinOnce sync.Once
+	benchBin     string
+	benchBinErr  error
+)
+
+// benchServerBinary builds the benchserver binary once per test process.
+func benchServerBinary() (string, error) {
+	benchBinOnce.Do(func() {
+		dir, err := os.MkdirTemp("", "goven-benchserver-*")
+		if err != nil {
+			benchBinErr = err
+			return
+		}
+		benchBin = filepath.Join(dir, "benchserver")
+		out, err := exec.Command("go", "build", "-o", benchBin,
+			"github.com/freeeve/goven/internal/benchserver").CombinedOutput()
+		if err != nil {
+			benchBinErr = fmt.Errorf("build benchserver: %v\n%s", err, out)
+		}
+	})
+	return benchBin, benchBinErr
 }
 
-// benchFixture builds a fixture repository and client outside the timed loop.
-// Note: the httptest server runs in-process, so allocs/op includes server-side
-// handler allocations; comparisons before/after an optimization remain valid.
-func benchFixture(b *testing.B, artifactSize int) (*fixtureServer, RemoteRepo, []byte) {
+// externalRepo starts (or reuses via GOVEN_BENCH_URL) an out-of-process
+// fixture server and returns it as a repository.
+func externalRepo(b *testing.B) RemoteRepo {
 	b.Helper()
-	f := &fixtureServer{files: map[string][]byte{}}
-	srv := newBenchServer(b, f)
-	data := bytes.Repeat([]byte{0xa5}, artifactSize)
-	f.put("g/a/1.0/a-1.0.jar", data)
-	return f, RemoteRepo{ID: "bench", URL: srv, Releases: true, Snapshots: true}, data
+	repo := RemoteRepo{ID: "bench", Releases: true, Snapshots: true}
+	if url := os.Getenv("GOVEN_BENCH_URL"); url != "" {
+		repo.URL = strings.TrimRight(url, "/")
+		return repo
+	}
+	bin, err := benchServerBinary()
+	if err != nil {
+		b.Fatal(err)
+	}
+	cmd := exec.Command(bin)
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		b.Fatal(err)
+	}
+	if err := cmd.Start(); err != nil {
+		b.Fatal(err)
+	}
+	b.Cleanup(func() {
+		cmd.Process.Kill()
+		cmd.Wait()
+	})
+	addrCh := make(chan string, 1)
+	go func() {
+		sc := bufio.NewScanner(stdout)
+		for sc.Scan() {
+			if addr, ok := strings.CutPrefix(sc.Text(), "LISTEN "); ok {
+				addrCh <- addr
+				return
+			}
+		}
+		// EOF or read error both mean the server died before announcing.
+		_ = sc.Err()
+		addrCh <- ""
+	}()
+	select {
+	case addr := <-addrCh:
+		if addr == "" {
+			b.Fatal("benchserver exited without announcing an address")
+		}
+		repo.URL = "http://" + addr
+	case <-time.After(10 * time.Second):
+		b.Fatal("benchserver did not start within 10s")
+	}
+	return repo
+}
+
+// seedRaw uploads a file to the fixture server without checksum sidecars.
+func seedRaw(b *testing.B, cl *Client, repo RemoteRepo, path string, data []byte) {
+	b.Helper()
+	err := cl.put(repo, path, func() (io.ReadCloser, int64) {
+		return io.NopCloser(bytes.NewReader(data)), int64(len(data))
+	})
+	if err != nil {
+		b.Fatal(err)
+	}
 }
 
 func BenchmarkDownload4MB(b *testing.B) {
-	_, repo, data := benchFixture(b, 4<<20)
+	repo := externalRepo(b)
 	cl := NewClient()
+	data := bytes.Repeat([]byte{0xa5}, 4<<20)
+	if err := cl.PutBytes(repo, "g/a/1.0/a-1.0.jar", data); err != nil {
+		b.Fatal(err)
+	}
 	dest := filepath.Join(b.TempDir(), "a.jar")
 	b.SetBytes(int64(len(data)))
 	b.ReportAllocs()
-	b.ResetTimer()
 	for b.Loop() {
 		if err := cl.Download(repo, "g/a/1.0/a-1.0.jar", dest); err != nil {
 			b.Fatal(err)
@@ -43,14 +122,13 @@ func BenchmarkDownload4MB(b *testing.B) {
 }
 
 func BenchmarkDownload4MBNoChecksums(b *testing.B) {
-	f, repo, data := benchFixture(b, 4<<20)
-	delete(f.files, "g/a/1.0/a-1.0.jar.sha1")
-	delete(f.files, "g/a/1.0/a-1.0.jar.sha256")
+	repo := externalRepo(b)
 	cl := NewClient()
+	data := bytes.Repeat([]byte{0xa5}, 4<<20)
+	seedRaw(b, cl, repo, "g/a/1.0/a-1.0.jar", data)
 	dest := filepath.Join(b.TempDir(), "a.jar")
 	b.SetBytes(int64(len(data)))
 	b.ReportAllocs()
-	b.ResetTimer()
 	for b.Loop() {
 		if err := cl.Download(repo, "g/a/1.0/a-1.0.jar", dest); err != nil {
 			b.Fatal(err)
@@ -59,7 +137,7 @@ func BenchmarkDownload4MBNoChecksums(b *testing.B) {
 }
 
 func BenchmarkPutFile4MB(b *testing.B) {
-	_, repo, _ := benchFixture(b, 1)
+	repo := externalRepo(b)
 	cl := NewClient()
 	local := filepath.Join(b.TempDir(), "up.jar")
 	if err := os.WriteFile(local, bytes.Repeat([]byte{0x5a}, 4<<20), 0o644); err != nil {
@@ -67,7 +145,6 @@ func BenchmarkPutFile4MB(b *testing.B) {
 	}
 	b.SetBytes(4 << 20)
 	b.ReportAllocs()
-	b.ResetTimer()
 	for b.Loop() {
 		if err := cl.PutFile(repo, "g/a/2.0/a-2.0.jar", local); err != nil {
 			b.Fatal(err)
@@ -76,7 +153,7 @@ func BenchmarkPutFile4MB(b *testing.B) {
 }
 
 func BenchmarkDeploySnapshot64KB(b *testing.B) {
-	_, repo, _ := benchFixture(b, 1)
+	repo := externalRepo(b)
 	cl := NewClient()
 	local := filepath.Join(b.TempDir(), "up.jar")
 	if err := os.WriteFile(local, bytes.Repeat([]byte{0x5a}, 64<<10), 0o644); err != nil {
@@ -95,12 +172,11 @@ func BenchmarkDeploySnapshot64KB(b *testing.B) {
 }
 
 func BenchmarkGetBytes64KB(b *testing.B) {
-	f, repo, _ := benchFixture(b, 1)
-	f.files["meta.xml"] = bytes.Repeat([]byte{'x'}, 64<<10)
+	repo := externalRepo(b)
 	cl := NewClient()
+	seedRaw(b, cl, repo, "meta.xml", bytes.Repeat([]byte{'x'}, 64<<10))
 	b.SetBytes(64 << 10)
 	b.ReportAllocs()
-	b.ResetTimer()
 	for b.Loop() {
 		if _, err := cl.GetBytes(repo, "meta.xml"); err != nil {
 			b.Fatal(err)
