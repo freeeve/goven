@@ -58,7 +58,7 @@ goven get com.example:my-lib:2.1.0-SNAPSHOT:jar:sources -o build/deps/
 
 Deploy an artifact — a drop-in replacement for `mvn deploy:deploy-file`,
 including SNAPSHOT timestamped versions, buildNumber increments, checksum
-sidecars (md5/sha1/sha256/sha512), and `maven-metadata.xml` maintenance:
+sidecars (md5/sha1/sha256), and `maven-metadata.xml` maintenance:
 
 ```sh
 goven deploy build/lib.jar --gav com.example:lib:2.1.0 --repo nexus::https://nexus.corp/repository/releases

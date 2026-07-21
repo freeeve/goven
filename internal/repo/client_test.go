@@ -1,6 +1,7 @@
 package repo
 
 import (
+	"bytes"
 	"crypto/sha1"
 	"crypto/sha256"
 	"encoding/hex"
@@ -54,13 +55,18 @@ func (f *fixtureServer) handler() http.Handler {
 		}
 		path := r.URL.Path[1:]
 		if r.Method == http.MethodPut {
-			body, err := io.ReadAll(r.Body)
-			if err != nil {
+			// Preallocate from Content-Length so server-side allocations do
+			// not swamp client-side numbers in benchmarks.
+			var buf bytes.Buffer
+			if r.ContentLength > 0 {
+				buf.Grow(int(r.ContentLength))
+			}
+			if _, err := io.Copy(&buf, r.Body); err != nil {
 				w.WriteHeader(http.StatusInternalServerError)
 				return
 			}
 			f.mu.Lock()
-			f.files[path] = body
+			f.files[path] = buf.Bytes()
 			f.mu.Unlock()
 			w.WriteHeader(http.StatusCreated)
 			return

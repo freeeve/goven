@@ -1,9 +1,9 @@
 package repo
 
 import (
+	"crypto/md5"
 	"crypto/sha1"
 	"crypto/sha256"
-	"crypto/sha512"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -15,6 +15,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -23,10 +24,12 @@ import (
 var ErrNotFound = errors.New("not found")
 
 // Client transfers files to and from Maven repositories with authentication,
-// proxy support, retries, and checksum verification.
+// proxy support, retries, and checksum verification. It is safe for
+// concurrent use.
 type Client struct {
 	UserAgent string
 	Retries   int // total attempts per request (default 3)
+	mu        sync.Mutex
 	transport map[string]*http.Client
 }
 
@@ -49,6 +52,8 @@ func (cl *Client) httpClient(repo RemoteRepo) *http.Client {
 	if repo.Proxy != nil {
 		key = fmt.Sprintf("%s:%d", repo.Proxy.Host, repo.Proxy.Port)
 	}
+	cl.mu.Lock()
+	defer cl.mu.Unlock()
 	if c, ok := cl.transport[key]; ok {
 		return c
 	}
@@ -115,38 +120,64 @@ func (cl *Client) do(repo RemoteRepo, method, path string, body func() (io.ReadC
 	return nil, fmt.Errorf("after %d attempts: %w", attempts, lastErr)
 }
 
-// GetBytes fetches a small repository file (metadata, checksums) into memory.
+// maxMetaBytes bounds in-memory fetches of metadata and checksum files.
+const maxMetaBytes = 16 << 20
+
+// GetBytes fetches a small repository file (metadata, checksums) into
+// memory, sized from Content-Length to avoid growth reallocations.
 func (cl *Client) GetBytes(repo RemoteRepo, path string) ([]byte, error) {
 	resp, err := cl.do(repo, http.MethodGet, path, nil)
 	if err != nil {
 		return nil, err
 	}
 	defer resp.Body.Close()
-	return io.ReadAll(io.LimitReader(resp.Body, 16<<20))
+	if n := resp.ContentLength; n > 0 && n <= maxMetaBytes {
+		buf := make([]byte, n)
+		if _, err := io.ReadFull(resp.Body, buf); err != nil {
+			return nil, fmt.Errorf("read %s: %w", path, err)
+		}
+		return buf, nil
+	}
+	return io.ReadAll(io.LimitReader(resp.Body, maxMetaBytes))
 }
 
 // checksumAlgos lists remote checksum sidecars in verification preference
-// order alongside their hash constructors.
+// order alongside their hash constructors. md5 is verified only as a last
+// resort but is still published for repositories that require it.
 var checksumAlgos = []struct {
 	ext string
 	new func() hash.Hash
 }{
-	{"sha512", sha512.New},
 	{"sha256", sha256.New},
 	{"sha1", sha1.New},
+	{"md5", md5.New},
 }
 
-// Download streams a repository file to destFile, verifying it against the
-// strongest checksum sidecar published next to it. A missing sidecar set is
-// tolerated (Maven's default "warn" policy); a mismatch is an error and the
-// partial file is removed. The download is written to a temp file and renamed
-// into place so destFile is never left truncated.
+// sidecarResult is the outcome of checksum-sidecar discovery: the index into
+// checksumAlgos (or -1 when the repository publishes none) and the expected
+// digest.
+type sidecarResult struct {
+	algo int
+	want string
+	err  error
+}
+
+// Download streams a repository file to destFile and verifies it against the
+// strongest checksum sidecar published next to it. Sidecar discovery runs
+// concurrently with the body transfer, and the file is hashed once with only
+// the algorithm that was actually found. A missing sidecar set is tolerated
+// (Maven's default "warn" policy); a mismatch is an error and the partial
+// file is removed. The download lands in a temp file renamed into place so
+// destFile is never left truncated.
 func (cl *Client) Download(repo RemoteRepo, path, destFile string) error {
 	resp, err := cl.do(repo, http.MethodGet, path, nil)
 	if err != nil {
 		return err
 	}
 	defer resp.Body.Close()
+
+	sidecar := make(chan sidecarResult, 1)
+	go func() { sidecar <- cl.findChecksum(repo, path) }()
 
 	if err := os.MkdirAll(filepath.Dir(destFile), 0o755); err != nil {
 		return err
@@ -157,45 +188,59 @@ func (cl *Client) Download(repo RemoteRepo, path, destFile string) error {
 	}
 	defer os.Remove(tmp.Name())
 
-	hashes := make([]hash.Hash, len(checksumAlgos))
-	writers := make([]io.Writer, 0, len(checksumAlgos)+1)
-	writers = append(writers, tmp)
-	for i, a := range checksumAlgos {
-		hashes[i] = a.new()
-		writers = append(writers, hashes[i])
-	}
-	if _, err := io.Copy(io.MultiWriter(writers...), resp.Body); err != nil {
+	if _, err := copyPooled(tmp, resp.Body); err != nil {
 		tmp.Close()
 		return fmt.Errorf("download %s: %w", path, err)
 	}
 	if err := tmp.Close(); err != nil {
 		return err
 	}
-	if err := cl.verifyChecksum(repo, path, hashes); err != nil {
-		return err
+
+	sc := <-sidecar
+	if sc.err != nil {
+		return sc.err
+	}
+	if sc.algo >= 0 {
+		got, err := hashFile(tmp.Name(), checksumAlgos[sc.algo].new())
+		if err != nil {
+			return err
+		}
+		if !strings.EqualFold(sc.want, got) {
+			return fmt.Errorf("%s checksum mismatch for %s: remote %s, computed %s",
+				checksumAlgos[sc.algo].ext, path, sc.want, got)
+		}
 	}
 	return os.Rename(tmp.Name(), destFile)
 }
 
-// verifyChecksum compares computed hashes against the first available remote
-// sidecar, strongest first. No sidecar available is not an error.
-func (cl *Client) verifyChecksum(repo RemoteRepo, path string, hashes []hash.Hash) error {
+// findChecksum locates the strongest checksum sidecar the repository
+// publishes for path. Absent sidecars are skipped; transport errors abort.
+func (cl *Client) findChecksum(repo RemoteRepo, path string) sidecarResult {
 	for i, a := range checksumAlgos {
 		remote, err := cl.GetBytes(repo, path+"."+a.ext)
 		if errors.Is(err, ErrNotFound) {
 			continue
 		}
 		if err != nil {
-			return fmt.Errorf("fetch %s checksum: %w", a.ext, err)
+			return sidecarResult{err: fmt.Errorf("fetch %s checksum: %w", a.ext, err)}
 		}
-		want := parseChecksum(string(remote))
-		got := hex.EncodeToString(hashes[i].Sum(nil))
-		if !strings.EqualFold(want, got) {
-			return fmt.Errorf("%s checksum mismatch for %s: remote %s, computed %s", a.ext, path, want, got)
-		}
-		return nil
+		return sidecarResult{algo: i, want: parseChecksum(string(remote))}
 	}
-	return nil
+	return sidecarResult{algo: -1}
+}
+
+// hashFile computes the hex digest of a file with one streaming pass through
+// a pooled buffer.
+func hashFile(path string, h hash.Hash) (string, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return "", err
+	}
+	defer f.Close()
+	if _, err := copyPooled(h, f); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(h.Sum(nil)), nil
 }
 
 // parseChecksum extracts the hex digest from a checksum file, which may carry

@@ -5,7 +5,6 @@ import (
 	"crypto/md5"
 	"crypto/sha1"
 	"crypto/sha256"
-	"crypto/sha512"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -31,22 +30,21 @@ type DeployResult struct {
 	Uploaded        []string // repository-relative paths, checksums excluded
 }
 
-// PutBytes uploads data followed by its md5/sha1/sha256/sha512 checksum
-// sidecars, covering both Maven's default publication set and stronger
-// verifiers.
-func (cl *Client) PutBytes(repo RemoteRepo, path string, data []byte) error {
-	if err := cl.put(repo, path, func() (io.ReadCloser, int64) {
-		return io.NopCloser(bytes.NewReader(data)), int64(len(data))
-	}); err != nil {
-		return err
-	}
-	for _, algo := range []struct {
-		ext string
-		new func() hash.Hash
-	}{{"md5", md5.New}, {"sha1", sha1.New}, {"sha256", sha256.New}, {"sha512", sha512.New}} {
-		h := algo.new()
-		h.Write(data)
-		sum := []byte(hex.EncodeToString(h.Sum(nil)))
+// publishAlgos is the checksum sidecar set goven publishes on upload: Maven's
+// required md5/sha1 pair plus sha256 for modern verifiers.
+var publishAlgos = []struct {
+	ext string
+	new func() hash.Hash
+}{
+	{"md5", md5.New},
+	{"sha1", sha1.New},
+	{"sha256", sha256.New},
+}
+
+// putChecksums uploads the checksum sidecars for already-computed digests.
+func (cl *Client) putChecksums(repo RemoteRepo, path string, hashes []hash.Hash) error {
+	for i, algo := range publishAlgos {
+		sum := []byte(hex.EncodeToString(hashes[i].Sum(nil)))
 		if err := cl.put(repo, path+"."+algo.ext, func() (io.ReadCloser, int64) {
 			return io.NopCloser(bytes.NewReader(sum)), int64(len(sum))
 		}); err != nil {
@@ -54,6 +52,34 @@ func (cl *Client) PutBytes(repo RemoteRepo, path string, data []byte) error {
 		}
 	}
 	return nil
+}
+
+// newPublishHashes computes all publication digests over one pass of r.
+func newPublishHashes(r io.Reader) ([]hash.Hash, error) {
+	hashes := make([]hash.Hash, len(publishAlgos))
+	writers := make([]io.Writer, len(publishAlgos))
+	for i, a := range publishAlgos {
+		hashes[i] = a.new()
+		writers[i] = hashes[i]
+	}
+	if _, err := copyPooled(io.MultiWriter(writers...), r); err != nil {
+		return nil, err
+	}
+	return hashes, nil
+}
+
+// PutBytes uploads data followed by its checksum sidecars.
+func (cl *Client) PutBytes(repo RemoteRepo, path string, data []byte) error {
+	if err := cl.put(repo, path, func() (io.ReadCloser, int64) {
+		return io.NopCloser(bytes.NewReader(data)), int64(len(data))
+	}); err != nil {
+		return err
+	}
+	hashes, err := newPublishHashes(bytes.NewReader(data))
+	if err != nil {
+		return err
+	}
+	return cl.putChecksums(repo, path, hashes)
 }
 
 // PutFile uploads a local file with checksum sidecars, streaming the content
@@ -69,16 +95,11 @@ func (cl *Client) PutFile(repo RemoteRepo, path, localFile string) error {
 		return err
 	}
 	size := info.Size()
-	hashes := []hash.Hash{md5.New(), sha1.New(), sha256.New(), sha512.New()}
-	writers := make([]io.Writer, len(hashes))
-	for i, h := range hashes {
-		writers[i] = h
-	}
-	if _, err := io.Copy(io.MultiWriter(writers...), f); err != nil {
-		f.Close()
+	hashes, err := newPublishHashes(f)
+	f.Close()
+	if err != nil {
 		return err
 	}
-	f.Close()
 
 	if err := cl.put(repo, path, func() (io.ReadCloser, int64) {
 		rc, err := os.Open(localFile)
@@ -89,15 +110,7 @@ func (cl *Client) PutFile(repo RemoteRepo, path, localFile string) error {
 	}); err != nil {
 		return err
 	}
-	for i, ext := range []string{"md5", "sha1", "sha256", "sha512"} {
-		sum := []byte(hex.EncodeToString(hashes[i].Sum(nil)))
-		if err := cl.put(repo, path+"."+ext, func() (io.ReadCloser, int64) {
-			return io.NopCloser(bytes.NewReader(sum)), int64(len(sum))
-		}); err != nil {
-			return err
-		}
-	}
-	return nil
+	return cl.putChecksums(repo, path, hashes)
 }
 
 // put issues one PUT and discards the response body.

@@ -61,10 +61,13 @@ func TestDeployRelease(t *testing.T) {
 	if !ok || string(sum) != hex.EncodeToString(want[:]) {
 		t.Errorf("sha256 sidecar = %q ok=%v", sum, ok)
 	}
-	for _, ext := range []string{"md5", "sha1", "sha512"} {
+	for _, ext := range []string{"md5", "sha1"} {
 		if _, ok := f.get("com/example/lib/1.0.0/lib-1.0.0.jar." + ext); !ok {
 			t.Errorf("%s sidecar missing", ext)
 		}
+	}
+	if _, ok := f.get("com/example/lib/1.0.0/lib-1.0.0.jar.sha512"); ok {
+		t.Error("sha512 sidecar should not be published (Maven publishes md5/sha1; goven adds sha256)")
 	}
 	m := fixtureMetadata(t, f, "com/example/lib/maven-metadata.xml")
 	if m.Versioning.Release != "1.0.0" || m.Versioning.Latest != "" ||
