@@ -30,11 +30,20 @@ Deploying a SNAPSHOT to a repository with a simulated 25 ms round-trip time
 (same file, same server; goven uploads concurrently where the protocol
 allows):
 
-|                        | wall time |
-|------------------------|-----------|
-| `mvn deploy:deploy-file` | ~1.5 s  |
-| `mvnd` (warm daemon)   | ~0.7 s    |
-| `goven deploy`         | ~0.22 s   |
+|                          | wall time |
+|--------------------------|-----------|
+| `mvn deploy:deploy-file` | ~1.5 s    |
+| `mvnd` (warm daemon)     | ~0.7 s    |
+| `goven deploy --serial`  | ~0.57 s   |
+| `goven deploy`           | ~0.22 s   |
+
+The serial-vs-concurrent rows isolate what concurrency buys: a SNAPSHOT
+deploy is ~20 sequential round trips (artifact, POM, checksum sidecars,
+metadata), which goven collapses into ~5 concurrent waves — the only
+ordering the protocol requires is that metadata lands after the files it
+references. In isolated benchmarks at the same RTT that's 492 ms serial
+vs 133 ms concurrent (3.7×); the gap over `mvnd` is round trips, not JVM
+startup, so it grows with network latency.
 
 The three tools' outputs were cross-verified: byte-identical artifacts,
 every checksum sidecar validated by recomputation, and identical SNAPSHOT
